@@ -162,7 +162,7 @@
     "autoprefixer": "^10.5.0",
     "bufferutil": "^4.1.0",
     "drizzle-kit": "^0.31.8",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "eslint": "^8.57.0",
     "eslint-plugin-react": "^7.37.0",
     "jsdom": "^29.1.1",
