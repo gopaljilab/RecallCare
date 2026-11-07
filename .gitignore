@@ -36,3 +36,15 @@ __pycache__/
 *.pkl
 !diabetes_model.pkl
 /eval.json
+coverage/
+job_logs.txt
+tsc-output-2.txt
+my_changes.patch
+*Content Guide.md
+*Problem Statament.md
+*Easy Guide.pdf
+patient.json
+patch_backend.js
+resolve.py
+scratch/
+

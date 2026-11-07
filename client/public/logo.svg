@@ -13,8 +13,8 @@
     <rect x="44" y="22" width="3" height="6" fill="#10B981" rx="1" opacity="0.9"/>
   </g>
   <!-- Wordmark -->
-  <text x="58" y="20" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="700" font-size="13" fill="#1E293B">Clinical Insight</text>
-  <text x="58" y="36" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="400" font-size="11" fill="#64748B">Engine</text>
+  <text x="58" y="22" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="700" font-size="14" fill="#1E293B">RecallCare</text>
+  <text x="58" y="36" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="400" font-size="9" fill="#64748B">Persistent Memory</text>
   <!-- AI badge -->
   <rect x="185" y="10" width="22" height="13" rx="3" fill="#2563EB"/>
   <text x="196" y="20.5" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="700" font-size="8.5" fill="white" text-anchor="middle">AI</text>

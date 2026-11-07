@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-We take the security of **Clinical-Insight-Engine** seriously. If you discover a security vulnerability, please help us responsibly disclose it.
+We take the security of **RecallCare** (built on Clinical-Insight-Engine) seriously. If you discover a security vulnerability, please help us responsibly disclose it.
 
 **Please do NOT open a public GitHub issue for security vulnerabilities.**
 

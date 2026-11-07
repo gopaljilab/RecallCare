@@ -2,7 +2,7 @@
 
 ## Our Pledge
 
-We are committed to making Clinical Insight Engine a welcoming, respectful, and harassment-free project for everyone, regardless of background, identity, experience level, or role in the community.
+We are committed to making RecallCare a welcoming, respectful, and harassment-free project for everyone, regardless of background, identity, experience level, or role in the community.
 
 This project discusses healthcare and machine learning concepts, so contributors are expected to communicate with extra care, accuracy, and respect.
 
@@ -32,7 +32,7 @@ Examples of unacceptable behavior include:
 
 ## Project Scope and Medical Disclaimer
 
-Clinical Insight Engine is intended for educational and research use only. Community discussions should not present the project as a source of medical diagnosis, treatment decisions, or professional medical advice.
+RecallCare is intended for educational and research use only. Community discussions should not present the project as a source of medical diagnosis, treatment decisions, or professional medical advice.
 
 When discussing risk predictions, model behavior, datasets, or clinical workflows, contributors should be careful to preserve the project's disclaimer and avoid claims that overstate the system's medical reliability.
 
@@ -63,8 +63,8 @@ Enforcement decisions should be fair, consistent, and focused on protecting the 
 
 ## Attribution
 
-This Code of Conduct is adapted from common open-source community guidelines and tailored for the Clinical Insight Engine project.
+This Code of Conduct is adapted from common open-source community guidelines and tailored for the RecallCare project.
 
 
-### GSSoC Cookie Security Rules
+### Cookie Security Rules
 - Enable Secure and SameSite=Lax flags on session credentials.

@@ -34,7 +34,7 @@ class EmailService {
   async sendEmail(options: EmailOptions): Promise<void> {
     try {
       const info = await this.transporter.sendMail({
-        from: process.env.SMTP_FROM || '"Clinical Insight Engine" <noreply@example.com>',
+        from: process.env.SMTP_FROM || '"RecallCare" <noreply@example.com>',
         to: options.to,
         subject: options.subject,
         html: options.html,

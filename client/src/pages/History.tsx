@@ -64,7 +64,7 @@ const PAGE_SIZE = 10;
 
 export default function History() {
   useEffect(() => {
-    document.title = "Clinical Insight Engine - Assessment History";
+    document.title = "RecallCare - Assessment History";
   }, []);
 
   const { toast } = useToast();

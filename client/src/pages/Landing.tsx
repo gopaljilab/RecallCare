@@ -75,9 +75,9 @@ const footerLinks = [
 ];
 
 const socialLinks = [
-  { href: "https://www.linkedin.com/in/guptagopal001/", icon: Linkedin, label: "LinkedIn" },
+  { href: "#", icon: Linkedin, label: "LinkedIn" },
   {
-    href: "https://github.com/gopaljilab/Clinical-Insight-Engine",
+    href: "#",
     icon: Github,
     label: "GitHub",
   },
@@ -101,7 +101,7 @@ function BrandMark() {
       </div>
       <div className="leading-tight">
         <p className="text-lg font-black tracking-tight text-[#1E293B] dark:text-slate-100">
-          Clinical Insight
+          RecallCare
         </p>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
           Clinical AI
@@ -253,7 +253,7 @@ export default function Landing() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/60 to-white text-slate-600 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 dark:text-slate-300 transition-colors duration-300">
       <header className="sticky top-0 z-50 border-b border-white/70 dark:border-slate-800/80 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl transition-colors duration-300">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 sm:px-6 lg:px-8">
-          <a href="#" aria-label="Clinical Insight home">
+          <a href="#" aria-label="RecallCare home">
             <BrandMark />
           </a>
 
@@ -527,7 +527,7 @@ export default function Landing() {
                 Risk assessment that fits the pace of modern clinics
               </h2>
               <p className="mt-5 text-lg leading-8 text-slate-600 dark:text-slate-400">
-                Clinical Insight turns routine patient inputs into clear,
+                RecallCare turns routine patient inputs and longitudinal history into clear,
                 explainable guidance for clinicians and patient-facing
                 conversations.
               </p>
@@ -1068,7 +1068,7 @@ export default function Landing() {
                 </p>
 
                 <p className="mt-4 text-base leading-7 text-slate-600 dark:text-slate-400">
-                  Clinical Insight operates as a pure decision support tool. It
+                  RecallCare operates as a pure decision support tool. It
                   highlights early intervention opportunities without overriding
                   your team's ultimate diagnosis or treatment choices.
                 </p>
@@ -1201,7 +1201,7 @@ export default function Landing() {
             <div className="mt-14 grid gap-6 md:grid-cols-3">
               {[
                 {
-                  quote: "Clinical Insight has transformed our preventive cardiometabolic screening workflow. What used to take 10 minutes now takes under 30 seconds.",
+                  quote: "RecallCare has transformed our preventive cardiometabolic screening workflow. What used to take 10 minutes now takes under 30 seconds.",
                   author: "Dr. Sarah Chen",
                   role: "Cardiologist, St. Mary\u2019s Hospital",
                 },
@@ -1290,7 +1290,7 @@ export default function Landing() {
                 },
                 {
                   q: "What integrations do you support?",
-                  a: "Clinical Insight offers REST API access for EHR integration, PDF report exports, and CSV data import/export. We are actively building native integrations with Epic and Cerner.",
+                  a: "RecallCare offers REST API access for EHR integration, PDF report exports, and CSV data import/export. We are actively building native integrations with Epic and Cerner.",
                 },
                 {
                   q: "Is there a mobile app available?",
@@ -1375,7 +1375,7 @@ export default function Landing() {
                 {
                   icon: Mail,
                   title: "Request a Demo",
-                  desc: "See Clinical Insight in action with a personalized walkthrough for your clinical team.",
+                  desc: "See RecallCare in action with a personalized walkthrough for your clinical team.",
                   href: "mailto:support@clinicalinsight.org",
                   label: "support@clinicalinsight.org",
                 },
@@ -1428,7 +1428,7 @@ export default function Landing() {
           <div>
             <BrandMark />
             <p className="mt-4 max-w-md text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Copyright 2026 Clinical Insight. Built for clinical decision
+              Copyright 2026 RecallCare. Built for clinical decision
               support, not diagnosis.
             </p>
           </div>

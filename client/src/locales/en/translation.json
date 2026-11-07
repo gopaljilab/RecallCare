@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "Clinical Insight",
+    "title": "RecallCare",
     "subtitle": "Preventive Risk Tool"
   },
   "nav": {
@@ -15,7 +15,7 @@
     "closeMenu": "Close navigation menu"
   },
   "auth": {
-    "signOutAria": "Sign out of Clinical Insight workspace",
+    "signOutAria": "Sign out of RecallCare workspace",
     "securityNotice": "This is a demo build. Do not use real patient data.",
     "sessionExpiring": "Session Expiring Soon",
     "sessionExpiringDesc": "You have been inactive. For your security, you will be logged out in 1 minute if inactivity continues.",
@@ -33,7 +33,7 @@
     "heroSubtitle": "Empower clinicians and patients with real-time risk analysis, personalized insights, and actionable prevention plans.",
     "heroCta": "Start Free Assessment",
     "heroLearnMore": "Learn More",
-    "featuresTitle": "Why Clinical Insight?",
+    "featuresTitle": "Why RecallCare?",
     "featureRealTimeTitle": "Real-Time Risk Analysis",
     "featureRealTimeDesc": "Get instant diabetes risk scores powered by clinical-grade machine learning models trained on diverse patient populations.",
     "featurePersonalizedTitle": "Personalized Insights",
@@ -48,7 +48,7 @@
     "workflowStep3Title": "Review & Take Action",
     "workflowStep3Desc": "Access personalized clinician and patient advice, export reports, and track changes over time.",
     "ctaTitle": "Ready to Transform Diabetes Care?",
-    "ctaSubtitle": "Join healthcare providers using Clinical Insight to deliver proactive, data-driven diabetes prevention.",
+    "ctaSubtitle": "Join healthcare providers using RecallCare to deliver proactive, data-driven diabetes prevention.",
     "ctaButton": "Get Started Free",
     "faqTitle": "Frequently Asked Questions",
     "faq1Q": "How accurate is the risk assessment?",
@@ -57,7 +57,7 @@
     "faq2A": "This is a demo build. Do not use real patient data.",
     "faq3Q": "Can I export assessment results?",
     "faq3A": "Yes, you can export individual assessments as PDF reports and bulk data as CSV for further analysis in your preferred tools.",
-    "footerCopyright": "© 2026 Clinical Insight Engine. All rights reserved.",
+    "footerCopyright": "© 2026 RecallCare. All rights reserved.",
     "footerPrivacy": "Privacy Policy",
     "footerTerms": "Terms of Service"
   },

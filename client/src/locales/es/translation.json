@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "Clinical Insight",
+    "title": "RecallCare",
     "subtitle": "Herramienta de Riesgo Preventivo"
   },
   "nav": {
@@ -13,7 +13,7 @@
     "signingOut": "Cerrando sesión..."
   },
   "auth": {
-    "signOutAria": "Cerrar sesión de Clinical Insight",
+    "signOutAria": "Cerrar sesión de RecallCare",
     "securityNotice": "Esta es una versión de demostración. No use datos reales de pacientes.",
     "sessionExpiring": "Sesión a punto de expirar",
     "sessionExpiringDesc": "Ha estado inactivo. Por su seguridad, se cerrará la sesión en 1 minuto si continúa la inactividad.",
@@ -31,7 +31,7 @@
     "heroSubtitle": "Capacite a médicos y pacientes con análisis de riesgo en tiempo real, información personalizada y planes de prevención accionables.",
     "heroCta": "Comenzar Evaluación Gratis",
     "heroLearnMore": "Más Información",
-    "featuresTitle": "¿Por qué Clinical Insight?",
+    "featuresTitle": "¿Por qué RecallCare?",
     "featureRealTimeTitle": "Análisis de Riesgo en Tiempo Real",
     "featureRealTimeDesc": "Obtenga puntuaciones de riesgo de diabetes al instante respaldadas por modelos de machine learning de grado clínico entrenados en poblaciones diversas.",
     "featurePersonalizedTitle": "Información Personalizada",
@@ -46,7 +46,7 @@
     "workflowStep3Title": "Revise y Actúe",
     "workflowStep3Desc": "Acceda a consejos personalizados para médico y paciente, exporte informes y realice seguimiento de cambios.",
     "ctaTitle": "¿Listo para Transformar la Atención de la Diabetes?",
-    "ctaSubtitle": "Únase a los profesionales de la salud que usan Clinical Insight para ofrecer prevención proactiva de la diabetes basada en datos.",
+    "ctaSubtitle": "Únase a los profesionales de la salud que usan RecallCare para ofrecer prevención proactiva de la diabetes basada en datos.",
     "ctaButton": "Comenzar Gratis",
     "faqTitle": "Preguntas Frecuentes",
     "faq1Q": "¿Qué tan preciso es el análisis de riesgo?",
@@ -55,7 +55,7 @@
     "faq2A": "Esta es una versión de demostración. No use datos reales de pacientes.",
     "faq3Q": "¿Puedo exportar los resultados de la evaluación?",
     "faq3A": "Sí, puede exportar evaluaciones individuales como informes PDF y datos masivos como CSV para su posterior análisis.",
-    "footerCopyright": "© 2026 Clinical Insight Engine. Todos los derechos reservados.",
+    "footerCopyright": "© 2026 RecallCare. Todos los derechos reservados.",
     "footerPrivacy": "Política de Privacidad",
     "footerTerms": "Términos del Servicio"
   },

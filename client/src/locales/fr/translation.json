@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "Clinical Insight",
+    "title": "RecallCare",
     "subtitle": "Outil de Prévention des Risques"
   },
   "nav": {
@@ -13,7 +13,7 @@
     "signingOut": "Déconnexion en cours..."
   },
   "auth": {
-    "signOutAria": "Se déconnecter de Clinical Insight",
+    "signOutAria": "Se déconnecter de RecallCare",
     "securityNotice": "Cette version de démonstration ne doit pas recevoir de données réelles de patients.",
     "sessionExpiring": "Session sur le point d'expirer",
     "sessionExpiringDesc": "Vous êtes inactif. Pour votre sécurité, vous serez déconnecté dans 1 minute si l'inactivité persiste.",
@@ -31,7 +31,7 @@
     "heroSubtitle": "Donnez aux cliniciens et aux patients les moyens d'agir avec une analyse des risques en temps réel, des informations personnalisées et des plans de prévention concrets.",
     "heroCta": "Commencer l'Évaluation Gratuite",
     "heroLearnMore": "En Savoir Plus",
-    "featuresTitle": "Pourquoi Clinical Insight ?",
+    "featuresTitle": "Pourquoi RecallCare ?",
     "featureRealTimeTitle": "Analyse des Risques en Temps Réel",
     "featureRealTimeDesc": "Obtenez des scores de risque de diabète instantanés grâce à des modèles de machine learning de qualité clinique entraînés sur des populations diverses.",
     "featurePersonalizedTitle": "Informations Personnalisées",
@@ -46,7 +46,7 @@
     "workflowStep3Title": "Examinez et Agissez",
     "workflowStep3Desc": "Accédez à des conseils personnalisés pour le clinicien et le patient, exportez des rapports et suivez l'évolution dans le temps.",
     "ctaTitle": "Prêt à Transformer la Prise en Charge du Diabète ?",
-    "ctaSubtitle": "Rejoignez les professionnels de santé qui utilisent Clinical Insight pour offrir une prévention proactive du diabète basée sur les données.",
+    "ctaSubtitle": "Rejoignez les professionnels de santé qui utilisent RecallCare pour offrir une prévention proactive du diabète basée sur les données.",
     "ctaButton": "Commencer Gratuitement",
     "faqTitle": "Questions Fréquentes",
     "faq1Q": "Quelle est la précision de l'évaluation des risques ?",
@@ -55,7 +55,7 @@
     "faq2A": "Cette version de démonstration ne doit pas recevoir de données réelles de patients.",
     "faq3Q": "Puis-je exporter les résultats d'évaluation ?",
     "faq3A": "Oui, vous pouvez exporter des évaluations individuelles sous forme de rapports PDF et des données groupées en CSV pour une analyse plus approfondie.",
-    "footerCopyright": "© 2026 Clinical Insight Engine. Tous droits réservés.",
+    "footerCopyright": "© 2026 RecallCare. Tous droits réservés.",
     "footerPrivacy": "Politique de Confidentialité",
     "footerTerms": "Conditions d'Utilisation"
   },

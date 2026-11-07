@@ -60,8 +60,8 @@ const footerLinks = [
 ];
 
 const socialLinks = [
-  { href: "https://www.linkedin.com/in/guptagopal001/", icon: Linkedin, label: "LinkedIn" },
-  { href: "https://github.com/gopaljilab/Clinical-Insight-Engine", icon: Github, label: "GitHub" },
+  { href: "#", icon: Linkedin, label: "LinkedIn" },
+  { href: "#", icon: Github, label: "GitHub" },
   { href: "mailto:hello@cardioguard.ai", icon: Mail, label: "Email" },
 ];
 

@@ -1,5 +1,5 @@
 """
-Entry point for the Clinical Insight Engine Python ML pipeline.
+Entry point for the RecallCare Python ML pipeline (built on Clinical Insight Engine).
 
 For training and prediction, use analyze.py directly:
   python analyze.py train

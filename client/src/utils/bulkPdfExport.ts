@@ -42,7 +42,7 @@ export function downloadBulkAssessmentPdf(assessments: BulkExportAssessment[]): 
     doc.setFontSize(8);
     doc.setFont("Helvetica", "italic");
     doc.text(
-      `Clinical Insight Engine — Page ${(doc as any).getCurrentPageInfo().pageNumber}`,
+      `RecallCare — Page ${(doc as any).getCurrentPageInfo().pageNumber}`,
       pw / 2,
       ph - 6,
       { align: "center" }

@@ -1,7 +1,7 @@
 # API Error Handling Standards
 
 ## Overview
-This document outlines the standard error handling conventions across the Clinical Insight Engine API. In a clinical context, error messages must be descriptive enough for debugging but strictly sanitized to prevent leakage of PHI (Protected Health Information) or internal system architectures.
+This document outlines the standard error handling conventions across the RecallCare API. In a clinical context, error messages must be descriptive enough for debugging but strictly sanitized to prevent leakage of PHI (Protected Health Information) or internal system architectures.
 
 ## HTTP Status Codes
 We utilize standard HTTP status codes:
