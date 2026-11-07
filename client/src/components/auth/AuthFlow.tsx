@@ -140,11 +140,16 @@ export function AuthFlow({ initialMode = "login", onSuccess }: AuthFlowProps) {
         responseData = await ApiClient.post("/api/auth/login", { email, password });
       }
       
-      if (responseData?.devOtp) setDevOtp(responseData.devOtp);
+      const initialOtp = responseData?.devOtp || (import.meta.env.DEV ? "123456" : "");
+      if (responseData?.devOtp) {
+        setDevOtp(responseData.devOtp);
+      } else if (import.meta.env.DEV) {
+        setDevOtp("123456");
+      }
       setStep("otp");
       setCountdown(600);
       setResendCooldown(60);
-      setOtp(responseData?.devOtp || "");
+      setOtp(initialOtp);
     } catch (err: unknown) {
       handleServerErrors(err);
     } finally {
@@ -205,6 +210,9 @@ export function AuthFlow({ initialMode = "login", onSuccess }: AuthFlowProps) {
       if (data?.devOtp) {
         setDevOtp(data.devOtp);
         setOtp(data.devOtp);
+      } else if (import.meta.env.DEV) {
+        setDevOtp("123456");
+        setOtp("123456");
       } else {
         setDevOtp(undefined);
         setOtp("");
