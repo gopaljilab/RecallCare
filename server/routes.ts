@@ -1,0 +1,755 @@
+import mlRouter from "./routes/ml.routes";
+import exportsRouter from "./routes/exports.routes";
+import { insertAssessmentNoteSchema } from "@shared/schema";
+import type { InsertModelVersion } from "@shared/schema";
+import { broadcastNote } from "./socket/notesSocket";
+import analyticsRouter from "./routes/analytics.routes";
+import uploadRouter from "./routes/upload.routes";
+import authRouter from "./routes/auth.routes";
+import settingsRouter from "./routes/settings.routes";
+import type { Express } from "express";
+import type { Server } from "http";
+
+import assessmentsRouter from "./routes/assessments.routes";
+import fhirRouter from "./routes/fhir.routes";
+import clinicalRouter from "./routes/clinical.routes";
+import { storage, type AssessmentCreateInput } from "./storage";
+import { requireAuth, requireAdmin, requireVerified } from "./auth";
+import { logger } from "./logger";
+import { reportScheduler } from "./services/report-scheduler";
+import {
+  generalLimiter,
+  adminLimiter,
+  exportLimiter,
+} from "./middleware/rateLimit";
+import { setCsrfToken, requireCsrfToken } from "./middleware/csrf";
+import { rateLimit } from "express-rate-limit";
+import { MLService, pythonDaemon, mlConcurrency } from "./services/mlService";
+import { getAssessmentQueue, getPythonExecutable, getQueueMetrics } from "./queue";
+import { execFile } from "child_process";
+import path from "path";
+import { escapeCsvCell } from "./utils/csvSanitizer";
+import bcrypt from "bcrypt";
+import { api } from "@shared/routes";
+import { z } from "zod";
+import os from "os";
+import { randomUUID } from "crypto";
+import { writeFile, unlink } from "fs/promises";
+import { validateDTO } from "./middleware/validateDTO";
+import { assessmentsToCsv } from "./utils/csvExport";
+import { searchQuerySchema, assessmentExportQuerySchema } from "./validation/searchValidation";
+import { analyzeSearchInput, logSecurityEvent, sanitizeDatabaseError } from "./security/sqlProtection";
+import { canAccessPatientRecord } from "./services/authz/patient-access";
+import { logAccessAttempt } from "./security/access-audit";
+
+const analyzePyPath = path.resolve(process.cwd(), "analyze.py");
+
+function execFileAsync(file: string, args: string[], options: any): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (err, stdout, stderr) => {
+      if (err) reject(err);
+      else resolve({ stdout: stdout as unknown as string, stderr: stderr as unknown as string });
+    });
+  });
+}
+
+async function seedDatabase() {
+  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  if (process.env.NODE_ENV === "production") {
+    if (!adminEmail) {
+      throw new Error("ADMIN_EMAIL environment variable is required in production.");
+    }
+    if (!adminPassword) {
+      throw new Error("ADMIN_PASSWORD environment variable is required in production.");
+    }
+  }
+
+  const email = adminEmail || "admin@clinical-insight-engine.dev";
+  const password = adminPassword || "admin123";
+
+  if (!adminEmail || !adminPassword) {
+    logger.warn("[DEV] Using default admin credentials. Set ADMIN_EMAIL and ADMIN_PASSWORD env vars for production.");
+  }
+
+  const existingAdmin = await storage.getUserByEmail("admin@clinical-insight-engine.dev");
+  if (!existingAdmin) {
+    const adminPasswordHash = bcrypt.hashSync(password, 10);
+    await storage.createUser({
+      fullName: "System Admin",
+      email,
+      medicalLicenseNumber: "ADMIN-000001",
+      passwordHash: adminPasswordHash,
+      role: "ADMIN",
+      isActive: true,
+      emailVerified: true,
+    });
+    logger.info("Admin user seeded successfully.");
+  }
+
+  const existing = await storage.getAssessments();
+  if (existing.data && existing.data.length !== 0) return;
+
+  logger.info("Seeding database with sample assessments...");
+
+  const seedUserId = "seed@clinical-insight-engine.dev";
+
+  const samples: AssessmentCreateInput[] = [
+    {
+      createdBy: seedUserId,
+      patientName: "John Doe",
+      gender: "Male",
+      age: 45,
+      hypertension: false,
+      heartDisease: false,
+      smokingHistory: "never",
+      bmi: 24.5,
+      hba1cLevel: 5.2,
+      bloodGlucoseLevel: 95,
+      riskScore: 12.3,
+      riskCategory: "LOW",
+      factors: [
+        { name: "Age", impact: "positive", description: "Increases risk" },
+        { name: "Bmi", impact: "negative", description: "Lowers risk" },
+        { name: "Hba1c Level", impact: "negative", description: "Lowers risk" },
+      ],
+      predictionMethod: null,
+      modelVersion: null,
+      fallbackUsed: null,
+    },
+    {
+      createdBy: seedUserId,
+      patientName: "Mary Johnson",
+      gender: "Female",
+      age: 62,
+      hypertension: true,
+      heartDisease: false,
+      smokingHistory: "former",
+      bmi: 31.2,
+      hba1cLevel: 6.8,
+      bloodGlucoseLevel: 145,
+      riskScore: 48.7,
+      riskCategory: "MODERATE",
+      factors: [
+        { name: "Hba1c Level", impact: "positive", description: "Increases risk" },
+        { name: "Bmi", impact: "positive", description: "Increases risk" },
+        { name: "Hypertension", impact: "positive", description: "Increases risk" },
+      ],
+      predictionMethod: null,
+      modelVersion: null,
+      fallbackUsed: null,
+    },
+  ];
+
+  for (const sample of samples) {
+    await storage.createAssessment(sample);
+  }
+
+  logger.info("Seeding complete!");
+}
+
+export async function registerRoutes(
+  httpServer: Server,
+  app: Express
+): Promise<Server> {
+  const previewLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many preview requests. Please try again later.", retryAfter: 60 },
+  });
+
+  const assessmentLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 5,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: {
+      error: "Too many assessment requests. Please try again later.",
+      retryAfter: 60,
+    },
+  });
+
+  // Support test compatibility — some tests reference lastStatus globally
+  app.use((req, res, next) => {
+    res.on("finish", () => {
+      (globalThis as any).lastStatus = res.statusCode;
+    });
+    next();
+  });
+
+  // Seed database on startup — development only to prevent fake data in production
+  // Minimal unblock: disable seeding by default to avoid schema mismatch errors.
+  if (process.env.NODE_ENV !== "production" && process.env.SEED_DB === "true") {
+    seedDatabase().catch((err) => logger.error({ err }, "Database seeding failed"));
+  }
+
+
+  app.get("/health", async (req, res) => {
+    const modelLoaded = process.env.PREDICTION_MODE === "rule-based"
+      ? false
+      : await pythonDaemon.checkReadiness().catch(() => false);
+    const inferenceStatus = pythonDaemon.getStatus();
+    res.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      api_available: true,
+      model_loaded: modelLoaded,
+      model_version: modelLoaded ? (inferenceStatus.modelVersion ?? process.env.MODEL_VERSION ?? null) : null,
+      training_manifest: modelLoaded ? inferenceStatus.trainingManifest : null,
+      inference_backend_status: inferenceStatus.daemonStatus,
+      prediction_method: process.env.PREDICTION_MODE === "rule-based" ? "rule_based" : "ml_model",
+    });
+  });
+
+  // CSRF token endpoint — clients call this to get a csrf-token cookie
+  app.get("/api/csrf-token", (req, res) => {
+    setCsrfToken(req, res);
+    res.json({ token: res.locals.csrfToken });
+  });
+
+  // Mount auth router
+  app.use("/api/auth", authRouter);
+  app.use("/api/ingest", fhirRouter);
+  app.use("/api/settings", settingsRouter);
+  app.use("/api/v1/clinical", clinicalRouter);
+
+  // Initialize the report scheduler
+  reportScheduler.init();
+  app.post(
+    api.assessments.preview.path,
+    requireAuth,
+    requireVerified,
+    requireCsrfToken,
+    previewLimiter,
+    validateDTO(api.assessments.preview.input),
+    async (req, res) => {
+      try {
+        const input = api.assessments.preview.input.parse(req.body);
+        const { prediction, isFallback } = await MLService.runAssessmentInference(input, undefined, { throwOnFailure: true });
+
+        logger.info({
+          event: "prediction_preview",
+          userId: req.session.user?.id,
+          prediction_method: prediction.prediction_method ?? (isFallback ? "rule_based" : "ml_model"),
+          model_version: prediction.model_version ?? null,
+          fallback_used: isFallback,
+        }, "Prediction preview completed");
+        return res.json({
+          riskScore: prediction.riskScore,
+          riskCategory: prediction.riskCategory,
+          factors: prediction.factors ?? [],
+          prediction_method: prediction.prediction_method ?? (isFallback ? "rule_based" : "ml_model"),
+          model_version: prediction.model_version ?? null,
+          fallback_used: isFallback,
+          isFallback,
+          disclaimer: "Research/prototype decision-support estimate only; not a diagnosis or substitute for professional medical assessment.",
+        });
+      } catch (err: unknown) {
+        if (err instanceof z.ZodError) {
+          return res.status(400).json({
+            message: err.issues[0].message
+          });
+        }
+        if ((err as Error).message?.includes("timed out")) {
+          return res.status(503).json({
+            message: "Clinical assessment preview timed out."
+          });
+        }
+        if ((err as Error & { statusCode?: number }).statusCode === 503) {
+          return res.status(503).json({ message: "ML inference service is unavailable. Please retry shortly." });
+        }
+        logger.error({ err }, "Error creating assessment preview");
+        return res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  );
+
+  app.get(
+    "/api/queue/health",
+    requireAuth,
+    requireAdmin,
+    async (_req, res) => {
+      try {
+        const metrics = await getQueueMetrics();
+        res.json(metrics);
+      } catch (err) {
+        logger.error({ err }, "Error fetching queue health");
+        res.status(500).json({ message: "Failed to fetch queue health" });
+      }
+    }
+  );
+
+
+  app.get(api.assessments.list.path, requireAuth, requireVerified, async (req, res) => {
+    try {
+      const userEmail = req.session.user?.email;
+      const cursorStr = req.query.cursor as string;
+      const limitStr = req.query.limit as string;
+      const cursor = cursorStr ? parseInt(cursorStr, 10) : undefined;
+      const limit = limitStr ? parseInt(limitStr, 10) : 50;
+
+      const assessments = await storage.getAssessments(limit, cursor, userEmail);
+
+      res.json(assessments);
+
+    } catch (err) {
+      res.status(500).json({
+        message: "Failed to fetch assessments"
+      });
+    }
+  });
+
+
+  /**
+   * GET /api/assessments/search
+   *
+   * Secure patient/assessment search endpoint.
+   *
+   * Security controls:
+   * 1. PRIMARY: Drizzle ORM ilike()/eq() — query parameters are bound placeholders,
+   *    never interpolated into raw SQL strings.  This prevents SQL injection.
+   * 2. SUPPLEMENTARY: Zod schema validates input length, character set, and rejects
+   *    known injection signatures before the query is even constructed.
+   * 3. Security logging: suspicious patterns are logged (without PHI) for audit.
+   * 4. User scoping: results are always filtered to the authenticated user's records.
+   * 5. Generic errors: DB errors are sanitized — no table names or SQL syntax leaked.
+   *
+   * Query params:
+   *   q            - search term (max 200 chars, safe characters only)
+   *   riskCategory - optional: LOW | MODERATE | HIGH
+   *   page         - page number (default 1)
+   *   limit        - results per page, max 100 (default 20)
+   */
+  app.get(
+    "/api/assessments/search",
+    requireAuth,
+    requireVerified,
+    async (req, res) => {
+      try {
+        const parseResult = searchQuerySchema.safeParse(req.query);
+
+        if (!parseResult.success) {
+          const rawQ = typeof req.query.q === "string" ? req.query.q : "";
+          const analysis = analyzeSearchInput(rawQ);
+
+          if (!analysis.safe) {
+            logSecurityEvent(
+              "SQL_INJECTION_ATTEMPT",
+              "Injection-like pattern detected in search query parameter",
+              req,
+              {
+                matchedPattern: (analysis as any).pattern,
+                userId: req.session.user?.id,
+              }
+            );
+          } else {
+            logSecurityEvent(
+              "MALFORMED_SEARCH_QUERY",
+              "Search query failed validation",
+              req,
+              { userId: req.session.user?.id }
+            );
+          }
+
+          return res.status(400).json({
+            message: parseResult.error.issues[0]?.message ?? "Invalid search parameters.",
+          });
+        }
+
+        const { q, riskCategory, cursor, limit } = parseResult.data;
+        const userEmail = req.session.user?.email;
+
+        if (q) {
+          const analysis = analyzeSearchInput(q);
+          if (!analysis.safe) {
+            logSecurityEvent(
+              "SUSPICIOUS_SEARCH_PATTERN",
+              "Validated search term contains a suspicious pattern",
+              req,
+              { matchedPattern: (analysis as any).pattern, userId: req.session.user?.id }
+            );
+          }
+        }
+
+        const results = await storage.searchAssessments(
+          q ?? "",
+          userEmail,
+          riskCategory,
+          limit,
+          cursor
+        );
+
+        return res.json(results);
+
+      } catch (err) {
+        logger.error({ err }, "Assessment search error:");
+        const { statusCode, message } = sanitizeDatabaseError(err);
+        return res.status(statusCode).json({ message });
+      }
+    }
+  );
+
+  /**
+   * GET /api/assessments/patient/:patientName/trends
+   *
+   * Returns all historical assessments for a given patient, ordered by date.
+   * Used by the Progress Tracking dashboard to plot biomarker trends.
+   */
+  app.get(
+    "/api/assessments/patient/:patientName/trends",
+    requireAuth,
+    requireVerified,
+    async (req, res) => {
+      try {
+        const patientName = Array.isArray(req.params.patientName) ? req.params.patientName[0] : req.params.patientName;
+        const user = req.session.user;
+        if (!user) {
+          return res.status(401).json({ message: "Authentication required." });
+        }
+        const result = await storage.getAssessmentsByPatientName(patientName, 100, 0, user.email);
+        if (result.data.length > 0 && !canAccessPatientRecord(user as any, result.data[0] as any)) {
+          logAccessAttempt(
+            user.id,
+            "Assessment",
+            result.data[0].id,
+            false,
+            "IDOR attempt: User not authorized to access patient trends"
+          );
+          return res.status(404).json({ message: "Assessment not found." });
+        }
+        return res.json(result);
+      } catch (err) {
+        logger.error({ err }, "Patient trends fetch error:");
+        return res.status(500).json({ message: "Failed to fetch patient trends." });
+      }
+    }
+  );
+
+  /**
+   * GET /api/assessments/export.csv
+   *
+   * Exports filtered assessments as a CSV file.
+   */
+  app.get(
+    "/api/assessments/export.csv",
+    requireAuth,
+    requireVerified,
+    exportLimiter,
+    async (req, res) => {
+      try {
+        const userEmail = req.session.user?.email;
+        const parseResult = assessmentExportQuerySchema.safeParse(req.query);
+        if (!parseResult.success) {
+          return res.status(400).json({
+            message: parseResult.error.issues[0]?.message ?? "Invalid export query parameters.",
+          });
+        }
+
+        const assessments = await storage.getAssessments({
+          ...parseResult.data,
+          createdBy: userEmail,
+        });
+
+        const csv = assessmentsToCsv(
+          assessments.data as unknown as Record<string, unknown>[]
+        );
+
+        res.header("Content-Type", "text/csv");
+        res.attachment("assessments.csv");
+        return res.send(csv);
+      } catch (err) {
+        logger.error({ err }, "Export error:");
+        return res.status(500).json({ message: "Failed to export data" });
+      }
+    }
+  );
+
+  // Mount domain-specific routers to allow static routes (like /cohort) to match before dynamic /:id fallback
+  app.use("/api/assessments", mlRouter);
+  app.use("/api/assessments", exportsRouter);
+  app.use("/api/assessments", analyticsRouter);
+  app.use("/api/assessments", generalLimiter, assessmentsRouter);
+
+  /**
+   * GET /api/assessments/:id
+   *
+   * Fetch a single assessment by numeric ID.
+   * Object-level authorization is enforced explicitly before returning records.
+   */
+  app.get(
+    "/api/assessments/:id",
+    requireAuth,
+    requireVerified,
+    async (req, res) => {
+      try {
+        const paramId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+        const id = parseInt(paramId as string, 10);
+
+        if (isNaN(id) || id <= 0) {
+          return res.status(400).json({ message: "Invalid assessment ID." });
+        }
+
+        const user = req.session.user;
+        if (!user) {
+          return res.status(401).json({ message: "Unauthorized" });
+        }
+
+        const assessment = await storage.getAssessmentById(id);
+
+        if (!assessment) {
+          return res.status(404).json({ message: "Assessment not found." });
+        }
+
+        // Object-Level Authorization Check
+        if (!canAccessPatientRecord(user as any, assessment)) {
+          // Log unauthorized access attempt (IDOR/Enumeration attempt)
+          logAccessAttempt(
+            user.id,
+            "Assessment",
+            id,
+            false,
+            "IDOR attempt: User not authorized to access this patient record"
+          );
+          
+          // Return 404 to prevent ID enumeration
+          return res.status(404).json({ message: "Assessment not found." });
+        }
+
+        // Authorized access
+        logAccessAttempt(user.id, "Assessment", id, true, "Authorized access");
+        return res.json(assessment);
+
+      } catch (err) {
+        // 4. Sanitize DB errors — never expose table names, SQL syntax, or stack traces
+        logger.error({ err }, "Assessment search error");
+        const { statusCode, message } = sanitizeDatabaseError(err);
+        return res.status(statusCode).json({ message });
+      }
+    }
+  );
+
+  // ─── Admin Routes ────────────────────────────────────────────────
+
+  // Apply admin rate limiter to all admin routes
+  app.use("/api/admin", adminLimiter);
+
+  app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const page = Math.max(1, parseInt(req.query.page as string) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+      const result = await storage.getAllUsers(page, limit);
+      res.json(result);
+    } catch (err) {
+      logger.error({ err }, "Admin users fetch error:");
+      res.status(500).json({ message: "Failed to fetch users." });
+    }
+  });
+
+  app.get("/api/admin/audit-logs", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const page = Math.max(1, parseInt(req.query.page as string) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+      
+      const filters = {
+        startDate: req.query.startDate as string,
+        endDate: req.query.endDate as string,
+        userId: req.query.userId as string,
+        ipAddress: req.query.ipAddress as string,
+        status: req.query.status as string,
+      };
+
+      const result = await storage.getLoginAuditLogs(page, limit, filters);
+      res.json(result);
+    } catch (err) {
+      logger.error({ err }, "Admin audit logs fetch error:");
+      res.status(500).json({ message: "Failed to fetch audit logs." });
+    }
+  });
+
+  app.get("/api/admin/audit-logs/export", requireAuth, requireAdmin, exportLimiter, async (req, res) => {
+    try {
+      const filters = {
+        startDate: req.query.startDate as string,
+        endDate: req.query.endDate as string,
+        userId: req.query.userId as string,
+        ipAddress: req.query.ipAddress as string,
+        status: req.query.status as string,
+      };
+
+      // Fetch all logs matching the filters (limit up to 10000 to prevent OOM)
+      const result = await storage.getLoginAuditLogs(1, 10000, filters);
+      const logs = result.data;
+
+      if (!logs || logs.length === 0) {
+        return res.status(404).json({ message: "No audit logs found to export." });
+      }
+
+      // Generate CSV
+      const headers = ["ID", "Timestamp", "User ID", "IP Address", "User Agent", "Login Status"];
+      const rows = logs.map(log => {
+        return [
+          log.id,
+          log.createdAt?.toISOString() ?? "",
+          log.userId ?? "",
+          log.ipAddress ?? "",
+          log.userAgent ?? "",
+          log.loginStatus ?? ""
+        ].map(escapeCsvCell).join(",");
+      });
+
+      const csvContent = [headers.join(","), ...rows].join("\n");
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename=audit-logs-export-${new Date().toISOString().split('T')[0]}.csv`);
+      res.send(csvContent);
+    } catch (err) {
+      logger.error({ err }, "Admin audit logs export error:");
+      res.status(500).json({ message: "Failed to export audit logs." });
+    }
+  });
+
+  app.patch("/api/admin/users/:id", requireAuth, requireAdmin, requireCsrfToken, async (req, res) => {
+    try {
+      const id = req.params.id as string;
+      const { isActive, role } = req.body;
+      const updated = await storage.updateUser(id, { isActive, role });
+      res.json(updated);
+    } catch (err) {
+      logger.error({ err }, "Admin user update error:");
+      res.status(500).json({ message: "Failed to update user." });
+    }
+  });
+
+  app.get("/api/admin/stats", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const stats = await storage.getSystemStats();
+      res.json(stats);
+    } catch (err) {
+      logger.error({ err }, "Admin stats fetch error:");
+      res.status(500).json({ message: "Failed to fetch system stats." });
+    }
+  });
+
+  // ─── Model Monitoring Routes ──────────────────────────────────────
+
+  app.get("/api/admin/model/versions", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const versions = await storage.getModelVersions();
+      res.json(versions);
+    } catch (err) {
+      logger.error({ err }, "Admin model versions fetch error:");
+      res.status(500).json({ message: "Failed to fetch model versions." });
+    }
+  });
+
+  app.get("/api/admin/model/versions/latest", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const latest = await storage.getLatestModelVersion();
+      res.json(latest ?? null);
+    } catch (err) {
+      logger.error({ err }, "Admin latest model version fetch error:");
+      res.status(500).json({ message: "Failed to fetch latest model version." });
+    }
+  });
+
+  app.get("/api/admin/semaphore", requireAuth, requireAdmin, async (_req, res) => {
+    res.json(mlConcurrency.getMetrics());
+  });
+
+  app.get("/api/admin/model/dataset-stats", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const stats = await storage.getModelDatasetStats();
+      res.json(stats ?? { classBalance: {}, featureStats: {}, totalSamples: 0 });
+    } catch (err) {
+      logger.error({ err }, "Admin dataset stats fetch error:");
+      res.status(500).json({ message: "Failed to fetch dataset stats." });
+    }
+  });
+
+  app.post("/api/admin/model/retrain", requireAuth, requireAdmin, requireCsrfToken, async (req, res) => {
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        getPythonExecutable(),
+        [analyzePyPath, "train_and_evaluate"],
+        { timeout: 120000, env: { ...process.env, PYTHONIOENCODING: "utf-8" } }
+      );
+
+      if (stderr) {
+        logger.warn({ stderr }, "Model retrain stderr:");
+      }
+
+      const lines = stdout.trim().split("\n").filter(Boolean);
+      const jsonLine = lines.find((l: string) => l.startsWith("{"));
+      if (!jsonLine) {
+        logger.error({ stdout, stderr }, "Model retrain no JSON output");
+        return res.status(500).json({ message: "Retrain produced no valid output." });
+      }
+
+      const metrics = JSON.parse(jsonLine);
+
+      if (metrics.error) {
+        return res.status(500).json({ message: metrics.error });
+      }
+
+      const previousVersion = await storage.getLatestModelVersion();
+      const nextVersion = (previousVersion?.version ?? 0) + 1;
+
+      const modelVersion: InsertModelVersion = {
+        version: nextVersion,
+        accuracy: metrics.accuracy,
+        precision: metrics.precision,
+        recall: metrics.recall,
+        f1Score: metrics.f1_score,
+        aucRoc: metrics.auc_roc,
+        datasetHash: metrics.dataset_hash,
+        numSamples: metrics.num_samples,
+        numFeatures: metrics.num_features,
+        classBalance: metrics.class_balance,
+        featureDistributions: metrics.feature_distributions,
+        trainingDurationMs: metrics.training_duration_ms,
+        status: "completed",
+      };
+      const record = await storage.createModelVersion(modelVersion);
+
+      logger.info(`Model retrained: version ${nextVersion}, accuracy ${metrics.accuracy}`);
+      res.json(record);
+    } catch (err: unknown) {
+      logger.error({ err }, "Admin model retrain error:");
+      res.status(500).json({ message: (err as any).stderr || "Model retraining failed." });
+    }
+  });
+
+  app.get("/api/admin/ml/status", requireAuth, requireAdmin, async (_req, res) => {
+    res.json(pythonDaemon.getStatus());
+  });
+
+  app.use("/api/upload", uploadRouter);
+
+  // Endpoint to capture and log client-side React errors
+  app.post("/api/logs/client-error", (req, res) => {
+    try {
+      const { message, stack, componentStack, url, timestamp } = req.body;
+      logger.error(
+        {
+          source: "client",
+          url,
+          componentStack,
+          timestamp,
+          stack,
+        },
+        `[Client Error] ${message}`
+      );
+      res.status(200).json({ success: true });
+    } catch (err) {
+      logger.error({ err }, "Failed to parse client error log");
+      res.status(500).json({ success: false });
+    }
+  });
+
+  return httpServer;
+}
+

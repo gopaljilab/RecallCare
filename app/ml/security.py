@@ -1,0 +1,102 @@
+import hmac
+import hashlib
+import os
+import pickle
+
+
+class SafeUnpickler(pickle.Unpickler):
+    """Restricted unpickler that guards against arbitrary code execution (CWE-502).
+
+    Only allows deserialization of classes from known-safe modules
+    (numpy, scipy, sklearn). Any attempt to unpickle
+    classes from arbitrary modules (e.g. ``os``, ``subprocess``, ``builtins``)
+    is blocked, preventing malicious pickle payloads from executing code.
+
+    Used as defense-in-depth alongside HMAC signature verification.
+    """
+
+    ALLOWED_MODULES: set[str] = {
+        "numpy",
+    }
+
+    ALLOWED_MODULE_PREFIXES: list[str] = [
+        "sklearn.",
+        "numpy.",
+        "scipy.",
+    ]
+
+    def find_class(self, module: str, name: str) -> type:
+        if module == "builtins":
+            raise pickle.UnpicklingError(
+                f"Refused to unpickle '{name}' from forbidden module 'builtins'. "
+                "The pickle file contains potentially malicious code (CWE-502)."
+            )
+        if module in self.ALLOWED_MODULES:
+            return super().find_class(module, name)
+        if any(module.startswith(prefix) for prefix in self.ALLOWED_MODULE_PREFIXES):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Refused to unpickle '{name}' from forbidden module '{module}'. "
+            "Potential RCE attempt (CWE-502)."
+        )
+
+
+def safe_pickle_load(file) -> object:
+    """Load a pickle stream using SafeUnpickler to prevent arbitrary code execution."""
+    return SafeUnpickler(file).load()
+
+
+def patch_joblib():
+    """Replace joblib.load with a version that uses SafeUnpickler by default.
+
+    Call this once at startup so that every call to joblib.load
+    deserialises through SafeUnpickler, guarding against arbitrary code
+    execution (CWE-502).
+    """
+    import joblib as _joblib
+
+    _original_load = _joblib.load
+
+    def _safe_load(filename, mmap_mode=None, *args, **kwargs):
+        with open(filename, "rb") as f:
+            return safe_pickle_load(f)
+
+    _joblib.load = _safe_load
+
+
+def get_signing_secret() -> bytes:
+    secret = os.environ.get("MODEL_SIGNING_KEY")
+    if not secret:
+        if os.environ.get("ALLOW_DEV_MODEL_SIGNING") == "1":
+            secret = "clinical-insight-engine-dev-secret"
+        else:
+            raise RuntimeError("MODEL_SIGNING_KEY is required to verify the model artifact.")
+    if os.environ.get("EXPECTED_MODEL_SHA256") and len(secret) < 32:
+        raise RuntimeError("MODEL_SIGNING_KEY must be at least 32 characters when an expected model hash is configured.")
+    return secret.encode("utf-8")
+
+def compute_signature(file_path: str) -> str:
+    secret = get_signing_secret()
+    h = hmac.new(secret, digestmod=hashlib.sha256)
+    with open(file_path, "rb") as f:
+        # Read in chunks to handle arbitrary file sizes
+        for chunk in iter(lambda: f.read(65536), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+def verify_signature(file_path: str) -> bool:
+    sig_path = file_path + ".sig"
+    if not os.path.exists(sig_path):
+        return False
+    try:
+        with open(sig_path, "r") as f:
+            expected_sig = f.read().strip()
+        actual_sig = compute_signature(file_path)
+        return hmac.compare_digest(actual_sig, expected_sig)
+    except Exception:
+        return False
+
+def write_signature(file_path: str):
+    sig = compute_signature(file_path)
+    with open(file_path + ".sig", "w") as f:
+        f.write(sig)

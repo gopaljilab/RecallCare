@@ -1,0 +1,1223 @@
+import sys
+import json
+import os
+import hashlib
+import math
+import tempfile
+import time
+import numpy as np
+import pandas as pd
+from app.ml.prediction_cache import get_cache
+from app.middleware.phi_redaction import phi_redaction_middleware
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+import pickle
+import gc
+import platform
+import sklearn
+
+try:
+    from fairlearn.metrics import demographic_parity_difference, equalized_odds_difference
+    FAIRLEARN_AVAILABLE = True
+except ImportError:
+    FAIRLEARN_AVAILABLE = False
+
+from services.safe_csv_reader import read_csv_safely, SafeCSVError
+
+LOCK_TIMEOUT = 60
+LOCK_POLL_INTERVAL = 0.1
+
+# Resolve paths relative to this script's directory so the files are
+# found regardless of the working directory (e.g., in Docker or when
+# spawned by the Node.js server from a different CWD).
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(SCRIPT_DIR, "attached_assets", "diabetes_dataset.csv")
+# Fall back to the legacy location if attached_assets doesn't have it
+if not os.path.exists(DATA_FILE):
+    DATA_FILE = os.path.join(SCRIPT_DIR, "diabetes_dataset.csv")
+MODEL_FILE = os.path.join(SCRIPT_DIR, "diabetes_model.pkl")
+LOCK_FILE = MODEL_FILE + ".lock"
+TRAINING_CONFIG_VERSION = "diabetes-logreg-v1"
+PREPROCESSING_CONFIG = {
+    "invalid_value_medians": {"bmi": 10, "HbA1c_level": 3, "blood_glucose_level": 50, "insulin": 0, "skin_thickness": 0},
+    "drop_gender_other": True,
+    "gender_encoding": "gender_Male binary indicator",
+    "smoking_encoding": "pandas get_dummies(prefix=smoke, drop_first=True)",
+    "scaler": "StandardScaler",
+    "missing_insulin_skin_thickness": "training dataset median; inference default 80/20",
+}
+TRAINING_CONFIG = {"estimator": "LogisticRegression", "class_weight": "balanced", "solver": "lbfgs", "C": 1.0, "random_state": 42, "max_iter": 100}
+
+def _training_manifest(dataset_hash, features, model_hash=None):
+    return {
+        "training_config_version": TRAINING_CONFIG_VERSION,
+        "dataset_sha256": dataset_hash,
+        "preprocessing": PREPROCESSING_CONFIG,
+        "training": TRAINING_CONFIG,
+        "feature_order": list(features),
+        "runtime": {"python": platform.python_version(), "numpy": np.__version__, "pandas": pd.__version__, "scikit_learn": sklearn.__version__},
+        "model_artifact_sha256": model_hash,
+    }
+
+def create_synthetic_data():
+    """Generates synthetic dataset to mimic the provided assignment data."""
+    np.random.seed(42)
+    n = 1000
+    age = np.random.randint(20, 80, n)
+    gender = np.random.choice(["Male", "Female"], n)
+    hypertension = np.random.choice([0, 1], n, p=[0.8, 0.2])
+    heart_disease = np.random.choice([0, 1], n, p=[0.9, 0.1])
+    smoking_history = np.random.choice(["never", "current", "former", "No Info"], n)
+    bmi = np.random.normal(28, 5, n)
+    hba1c_level = np.random.normal(5.5, 1.5, n)
+    blood_glucose_level = np.random.normal(130, 40, n)
+    insulin = np.random.normal(80, 20, n)
+    skin_thickness = np.random.normal(20, 5, n)
+    
+    # Calculate a synthetic risk score 
+    risk_score = (age * 0.05 + hypertension * 1.5 + heart_disease * 2.0 + 
+                  (bmi - 25) * 0.1 + (hba1c_level - 5.5) * 2.0 + (blood_glucose_level - 100) * 0.02)
+    
+    # Convert score to probabilities and sample binary diabetes target
+    prob = 1 / (1 + np.exp(-(risk_score - 3)))
+    diabetes = (np.random.rand(n) < prob).astype(int)
+    
+    df = pd.DataFrame({
+        "gender": gender,
+        "age": age,
+        "hypertension": hypertension,
+        "heart_disease": heart_disease,
+        "smoking_history": smoking_history,
+        "bmi": bmi,
+        "HbA1c_level": hba1c_level,
+        "blood_glucose_level": blood_glucose_level,
+        "insulin": insulin,
+        "skin_thickness": skin_thickness,
+        "diabetes": diabetes
+    })
+    df.to_csv(DATA_FILE, index=False)
+    return df
+
+def generate_correlation_heatmap(df, output_path="correlation_heatmap.png"):
+    """
+    Generate and save a correlation heatmap for numeric dataset columns.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    numeric_df = df.select_dtypes(include=["number"])
+
+    if numeric_df.empty:
+        raise ValueError("No numeric columns found for correlation heatmap.")
+
+    correlation_matrix = numeric_df.corr()
+
+    plt.figure(figsize=(10, 8))
+
+    sns.heatmap(
+        correlation_matrix,
+        annot=True,
+        cmap="coolwarm",
+        fmt=".2f",
+        linewidths=0.5
+    )
+
+    plt.title("Correlation Heatmap - Diabetes Dataset")
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+
+    print(f"Correlation heatmap saved as {output_path}")
+
+
+def train_model_pipeline():
+    """Loads data, preprocesses it, and trains a logistic regression model from scratch."""
+    if not os.path.exists(DATA_FILE):
+        return None, None, None, None
+    
+    try:
+        df = read_csv_safely(DATA_FILE)
+    except SafeCSVError as e:
+        print(f"Error loading dataset: {e}", file=sys.stderr)
+        return None, None, None, None
+    
+    # Check for missing values and unrealistic zeros
+    clinical_cols = ['bmi', 'HbA1c_level', 'blood_glucose_level', 'insulin', 'skin_thickness']
+    thresholds = {'bmi': 10, 'HbA1c_level': 3, 'blood_glucose_level': 50, 'insulin': 0, 'skin_thickness': 0}
+
+    for col in clinical_cols:
+        # Dataset may not include all columns (e.g., older/trimmed CSVs).
+        if col not in df.columns:
+            continue
+        invalid_mask = (df[col] < thresholds.get(col, 0)) | (df[col].isna())
+        if invalid_mask.any():
+            df.loc[invalid_mask, col] = df[col].median()
+
+    # Data Cleaning & Preprocessing
+    df = df[df['gender'] != 'Other'] 
+    df['gender_Male'] = (df['gender'] == 'Male').astype(int)
+    
+    smoking_dummies = pd.get_dummies(df['smoking_history'], prefix='smoke', drop_first=True)
+    df = pd.concat([df, smoking_dummies], axis=1)
+    
+    features = ['age', 'hypertension', 'heart_disease', 'bmi', 'HbA1c_level', 'blood_glucose_level', 'insulin', 'skin_thickness', 'gender_Male'] + list(smoking_dummies.columns)
+    # Only keep features that exist in the dataset (some trimmed datasets may not include insulin/skin_thickness)
+    features = [f for f in features if f in df.columns]
+
+    X = df[features]
+    y = df['diabetes']
+    
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    model = LogisticRegression(class_weight='balanced', solver='lbfgs', C=1.0, random_state=42, max_iter=100)
+    model.fit(X_scaled, y)
+    
+    # Compute covariance matrix of coefficients (accounting for balanced class weights)
+    X_design = np.hstack([np.ones((X_scaled.shape[0], 1)), X_scaled])
+    p = model.predict_proba(X_scaled)[:, 1]
+    
+    classes = np.unique(y)
+    class_weights = len(y) / (len(classes) * np.bincount(y))
+    sample_weights = class_weights[y.values]
+    
+    D = sample_weights * p * (1 - p)
+    I = np.dot(X_design.T * D, X_design)
+    C = getattr(model, 'C', 1.0)
+    I_reg = np.eye(X_design.shape[1])
+    I_reg[0, 0] = 0.0  # Do not regularize intercept
+    I += (1.0 / C) * I_reg
+    cov_beta = np.linalg.inv(I)
+    
+    try:
+        del df, X, y, X_scaled, X_design, D, I, I_reg
+        gc.collect()
+    except Exception:
+        pass
+    
+    return model, scaler, features, cov_beta
+
+
+from typing import Optional
+
+
+def _compute_dataset_hash(filepath: str) -> Optional[str]:
+    """Compute SHA-256 hash of the dataset file contents."""
+    if not os.path.exists(filepath):
+        return None
+    hasher = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        for chunk in iter(lambda: f.read(65536), b''):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+class FileLock:
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.fd = None
+
+    def acquire(self, timeout=LOCK_TIMEOUT):
+        if self.fd is not None:
+            return False
+
+        end_time = time.time() + timeout
+        while True:
+            try:
+                # Open the sidecar lock file in append+ mode (creates it if missing)
+                self.fd = open(self.filepath, "a+")
+                
+                # Request a non-blocking exclusive lock
+                if sys.platform == "win32":
+                    import msvcrt
+                    self.fd.seek(0)
+                    msvcrt.locking(self.fd.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                
+                # Lock acquired successfully! Write PID.
+                self.fd.seek(0)
+                self.fd.truncate()
+                self.fd.write(str(os.getpid()))
+                self.fd.flush()
+                return True
+            except OSError:
+                if self.fd:
+                    try:
+                        self.fd.close()
+                    except OSError:
+                        pass
+                    self.fd = None
+            
+            if time.time() >= end_time:
+                break
+            time.sleep(LOCK_POLL_INTERVAL)
+        return False
+
+    def release(self):
+        if self.fd is not None:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    self.fd.seek(0)
+                    msvcrt.locking(self.fd.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.fd.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                self.fd.close()
+            except OSError:
+                pass
+            self.fd = None
+            try:
+                os.remove(self.filepath)
+            except OSError:
+                pass
+
+_global_lock = FileLock(LOCK_FILE)
+
+def _acquire_lock(timeout=LOCK_TIMEOUT):
+    """Acquire an exclusive OS-level lock on the model file.
+
+    Blocks up to `timeout` seconds, polling every 100ms.
+    Returns True if the lock was acquired, False if the timeout was reached.
+    """
+    return _global_lock.acquire(timeout)
+
+
+def _release_lock():
+    """Release the exclusive OS-level lock."""
+    _global_lock.release()
+
+
+def _clean_stale_lock():
+    """OS-level locks clean up automatically on process termination. No manual cleanup needed."""
+    pass
+
+
+def _atomic_write(filepath, data):
+    """Write data atomically to filepath using a temporary file and rename.
+
+    Uses tempfile.mkstemp in the same directory as the target file to
+    ensure an atomic os.replace() on the same filesystem. This prevents
+    concurrent readers from seeing a partially written file.
+    """
+    dirpath = os.path.dirname(filepath) or '.'
+    if isinstance(data, tuple) and len(data) == 7:
+        data = (*data, _training_manifest(data[3], data[2]))
+    fd, tmp_path = tempfile.mkstemp(dir=dirpath, suffix='.tmp')
+    try:
+        os.close(fd)
+        with open(tmp_path, 'wb') as f:
+            pickle.dump(data, f)
+        
+        from app.ml.security import write_signature
+        write_signature(tmp_path)
+        
+        os.replace(tmp_path, filepath)
+        # Also move the signature file to match the filepath
+        if os.path.exists(tmp_path + ".sig"):
+            os.replace(tmp_path + ".sig", filepath + ".sig")
+        artifact_hash = _compute_dataset_hash(filepath)
+        dataset_hash = data[3] if isinstance(data, tuple) and len(data) > 3 else None
+        features = data[2] if isinstance(data, tuple) and len(data) > 2 else []
+        manifest = _training_manifest(dataset_hash, features, artifact_hash)
+        manifest_path = filepath + ".manifest.json"
+        manifest_tmp = manifest_path + ".tmp"
+        with open(manifest_tmp, "w", encoding="utf-8") as manifest_file:
+            json.dump(manifest, manifest_file, sort_keys=True, separators=(",", ":"))
+            manifest_file.write("\n")
+        os.replace(manifest_tmp, manifest_path)
+    except BaseException:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            if os.path.exists(tmp_path + ".sig"):
+                os.remove(tmp_path + ".sig")
+        except OSError:
+            pass
+        raise
+
+
+def save_pretrained_model():
+    """Train the model pipeline and atomically serialize the artifacts to disk.
+
+    Acquires a file lock and uses an atomic write (tempfile + os.replace)
+    to prevent cache corruption from concurrent access.
+    """
+    if not _acquire_lock():
+        print("Could not acquire lock for saving model.", file=sys.stderr)
+        return False
+    try:
+        model, scaler, features, cov_beta = train_model_pipeline()
+        if model is None:
+            print("Failed to train model. Ensure diabetes_dataset.csv is present.", file=sys.stderr)
+            return False
+        dataset_hash = _compute_dataset_hash(DATA_FILE)
+        _atomic_write(MODEL_FILE, (model, scaler, features, dataset_hash, cov_beta, None, None))
+        print(f"Model successfully serialized to {MODEL_FILE}", file=sys.stderr)
+        return True
+    finally:
+        _release_lock()
+
+
+def train_and_evaluate():
+    """Train on a hold-out split, compute metrics, then retrain on full data.
+
+    Outputs a JSON line with evaluation metrics and dataset statistics,
+    then saves the full-data model to disk.
+
+    Returns a dict of metrics and dataset stats (also printed to stdout).
+    """
+    if not os.path.exists(DATA_FILE):
+        print(json.dumps({"error": "Dataset not found"}))
+        return None
+
+    try:
+        df = read_csv_safely(DATA_FILE)
+    except SafeCSVError as e:
+        print(json.dumps({"error": f"Error loading dataset: {e}"}))
+        return None
+
+    clinical_cols = ['bmi', 'HbA1c_level', 'blood_glucose_level', 'insulin', 'skin_thickness']
+    for col in clinical_cols:
+        if col not in df.columns:
+            continue
+        thresholds = {'bmi': 10, 'HbA1c_level': 3, 'blood_glucose_level': 50, 'insulin': 0, 'skin_thickness': 0}
+        invalid_mask = (df[col] < thresholds.get(col, 0)) | (df[col].isna())
+        if invalid_mask.any():
+            df.loc[invalid_mask, col] = df[col].median()
+
+    df = df[df['gender'] != 'Other']
+    df['gender_Male'] = (df['gender'] == 'Male').astype(int)
+
+    smoking_dummies = pd.get_dummies(df['smoking_history'], prefix='smoke', drop_first=True)
+    df = pd.concat([df, smoking_dummies], axis=1)
+
+    features = ['age', 'hypertension', 'heart_disease', 'bmi', 'HbA1c_level', 'blood_glucose_level', 'insulin', 'skin_thickness', 'gender_Male'] + list(smoking_dummies.columns)
+
+    features = [f for f in features if f in df.columns]
+    X = df[features].values
+    y = df['diabetes'].values
+
+    start_time = time.time()
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    model = LogisticRegression(class_weight='balanced', solver='lbfgs', C=1.0, random_state=42, max_iter=100)
+    model.fit(X_train_scaled, y_train)
+
+    y_pred = model.predict(X_test_scaled)
+    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+
+    accuracy = float(accuracy_score(y_test, y_pred))
+    precision = float(precision_score(y_test, y_pred, zero_division=0))
+    recall = float(recall_score(y_test, y_pred, zero_division=0))
+    f1 = float(f1_score(y_test, y_pred, zero_division=0))
+    try:
+        auc = float(roc_auc_score(y_test, y_proba))
+    except Exception:
+        auc = None
+
+    class_balance = df['diabetes'].value_counts().to_dict()
+    class_balance = {str(k): int(v) for k, v in class_balance.items()}
+
+    feature_stats = {}
+    for col in features:
+        if col in df.columns:
+            feature_stats[col] = {
+                "mean": float(df[col].mean()),
+                "std": float(df[col].std())
+            }
+
+    num_samples = int(len(df))
+    num_features = int(len(features))
+
+    dataset_hash = _compute_dataset_hash(DATA_FILE)
+    # Content hash is the dataset identity; filesystem timestamps vary by build.
+    mtime, size = None, None
+
+    result = {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+        "auc_roc": auc,
+        "dataset_hash": dataset_hash,
+        "num_samples": num_samples,
+        "num_features": num_features,
+        "class_balance": class_balance,
+        "feature_distributions": feature_stats,
+        "dataset_mtime": mtime,
+        "dataset_size": size,
+    }
+
+    if FAIRLEARN_AVAILABLE and 'gender_Male' in features:
+        try:
+            gender_idx = features.index('gender_Male')
+            sensitive_features_test = X_test[:, gender_idx]
+            dpd = demographic_parity_difference(
+                y_true=y_test,
+                y_pred=y_pred,
+                sensitive_features=sensitive_features_test
+            )
+            eod = equalized_odds_difference(
+                y_true=y_test,
+                y_pred=y_pred,
+                sensitive_features=sensitive_features_test
+            )
+            result["fairness_report"] = {
+                "sensitive_attribute": "gender",
+                "demographic_parity_difference": float(dpd),
+                "equalized_odds_difference": float(eod),
+                "interpretation": "Values closer to 0 indicate better fairness between groups. Higher values denote greater disparity."
+            }
+        except Exception as e:
+            result["fairness_report"] = {"error": f"Failed to compute fairness metrics: {str(e)}"}
+
+    # Retrain on full data and save
+    scaler_full = StandardScaler()
+    X_scaled_full = scaler_full.fit_transform(X)
+    model_full = LogisticRegression(class_weight='balanced', solver='lbfgs', C=1.0, random_state=42, max_iter=100)
+    model_full.fit(X_scaled_full, y)
+
+    X_design = np.hstack([np.ones((X_scaled_full.shape[0], 1)), X_scaled_full])
+    p = model_full.predict_proba(X_scaled_full)[:, 1]
+    classes = np.unique(y)
+    class_weights_arr = len(y) / (len(classes) * np.bincount(y))
+    sample_weights = class_weights_arr[y]
+    D = sample_weights * p * (1 - p)
+    I_mat = np.dot(X_design.T * D, X_design)
+    C_val = getattr(model_full, 'C', 1.0)
+    I_reg = np.eye(X_design.shape[1])
+    I_reg[0, 0] = 0.0
+    I_mat += (1.0 / C_val) * I_reg
+    cov_beta = np.linalg.inv(I_mat)
+
+    training_duration_ms = int((time.time() - start_time) * 1000)
+    result["training_duration_ms"] = training_duration_ms
+
+    _atomic_write(MODEL_FILE, (model_full, scaler_full, features, dataset_hash, cov_beta, mtime, size))
+    print(f"Model saved to {MODEL_FILE}", file=sys.stderr)
+
+    print(json.dumps(result))
+    
+    try:
+        del df, X, y, X_train, X_test, y_train, y_test, X_train_scaled, X_test_scaled, X_scaled_full, X_design, D, I_mat, I_reg
+        gc.collect()
+    except Exception:
+        pass
+        
+    return result
+
+
+def get_model():
+    """Load pre-trained model, scaler, and features from disk with dataset change detection."""
+    try:
+        current_mtime = os.path.getmtime(DATA_FILE)
+        current_size = os.path.getsize(DATA_FILE)
+    except OSError:
+        current_mtime, current_size = None, None
+
+    current_hash = None
+
+    def get_current_hash():
+        nonlocal current_hash
+        if current_hash is None:
+            current_hash = _compute_dataset_hash(DATA_FILE)
+        return current_hash
+
+    from app.ml.security import verify_signature, safe_pickle_load
+
+    expected_artifact_hash = os.environ.get("EXPECTED_MODEL_SHA256")
+    if expected_artifact_hash:
+        if len(expected_artifact_hash) != 64 or any(c not in "0123456789abcdef" for c in expected_artifact_hash.lower()):
+            raise RuntimeError("EXPECTED_MODEL_SHA256 must be a 64-character SHA-256 digest.")
+        if not os.path.isfile(MODEL_FILE):
+            raise RuntimeError("The expected packaged model artifact is missing; refusing runtime training.")
+        actual_artifact_hash = _compute_dataset_hash(MODEL_FILE)
+        if actual_artifact_hash != expected_artifact_hash.lower():
+            raise RuntimeError("Packaged model artifact SHA-256 does not match EXPECTED_MODEL_SHA256.")
+        if not verify_signature(MODEL_FILE):
+            raise RuntimeError("Packaged model artifact signature verification failed.")
+        manifest_path = MODEL_FILE + ".manifest.json"
+        if not os.path.isfile(manifest_path):
+            raise RuntimeError("The packaged model training manifest is missing.")
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+                packaged_manifest = json.load(manifest_file)
+        except Exception as exc:
+            raise RuntimeError("The packaged model training manifest is invalid.") from exc
+        if packaged_manifest.get("model_artifact_sha256") != expected_artifact_hash.lower():
+            raise RuntimeError("Packaged model manifest does not match EXPECTED_MODEL_SHA256.")
+        if packaged_manifest.get("dataset_sha256") != get_current_hash():
+            raise RuntimeError("Packaged model manifest does not match the bundled training dataset.")
+
+    if os.path.exists(MODEL_FILE):
+        try:
+            if not verify_signature(MODEL_FILE):
+                raise PermissionError(
+                    f"Signature verification failed for: {MODEL_FILE}. "
+                    "Refusing to load untrusted model file to prevent Remote Code Execution."
+                )
+            with open(MODEL_FILE, 'rb') as f:
+                model_data = safe_pickle_load(f)
+            if isinstance(model_data, tuple) and len(model_data) >= 3:
+                model, scaler, features = model_data[:3]
+                cached_hash = model_data[3] if len(model_data) >= 4 else None
+                cov_beta = model_data[4] if len(model_data) >= 5 else None
+                cached_mtime = model_data[5] if len(model_data) >= 6 else None
+                cached_size = model_data[6] if len(model_data) >= 7 else None
+
+                if expected_artifact_hash:
+                    if cached_hash != get_current_hash() or cov_beta is None:
+                        raise RuntimeError("Packaged model payload is incompatible with the bundled dataset.")
+                    return model, scaler, features, cov_beta
+
+                if (current_mtime is not None and current_size is not None and
+                    cached_mtime == current_mtime and cached_size == current_size and
+                    cov_beta is not None):
+                    return model, scaler, features, cov_beta
+
+                h = get_current_hash()
+                if h is not None and h == cached_hash and cov_beta is not None:
+                    if len(model_data) < 7 and _acquire_lock():
+                        try:
+                            _atomic_write(MODEL_FILE, (model, scaler, features, h, cov_beta, None, None))
+                        finally:
+                            _release_lock()
+                    return model, scaler, features, cov_beta
+
+                print("Dataset has changed. Retraining model...", file=sys.stderr)
+        except Exception as e:
+            if expected_artifact_hash:
+                raise RuntimeError("Failed to load the required packaged model artifact; refusing runtime training.") from e
+            print(f"Failed to load pre-trained model: {e}", file=sys.stderr)
+
+    if expected_artifact_hash:
+        raise RuntimeError("Required packaged model artifact could not be loaded; refusing runtime training.")
+
+    if not _acquire_lock():
+        print("Could not acquire lock for model retraining.", file=sys.stderr)
+        return None, None, None, None
+
+    try:
+        if os.path.exists(MODEL_FILE):
+            try:
+                if not verify_signature(MODEL_FILE):
+                    raise PermissionError(
+                        f"Signature verification failed for: {MODEL_FILE}. "
+                        "Refusing to load untrusted model file to prevent Remote Code Execution."
+                    )
+                with open(MODEL_FILE, 'rb') as f:
+                    model_data = safe_pickle_load(f)
+                if isinstance(model_data, tuple) and len(model_data) >= 3:
+                    cached_hash = model_data[3] if len(model_data) >= 4 else None
+                    cov_beta = model_data[4] if len(model_data) >= 5 else None
+                    cached_mtime = model_data[5] if len(model_data) >= 6 else None
+                    cached_size = model_data[6] if len(model_data) >= 7 else None
+
+                    if (current_mtime is not None and current_size is not None and
+                        cached_mtime == current_mtime and cached_size == current_size and
+                        cov_beta is not None):
+                        return model_data[0], model_data[1], model_data[2], cov_beta
+
+                    h = get_current_hash()
+                    if h is not None and h == cached_hash and cov_beta is not None:
+                        if len(model_data) < 8:
+                            _atomic_write(MODEL_FILE, (model_data[0], model_data[1], model_data[2], h, cov_beta, None, None))
+                        return model_data[0], model_data[1], model_data[2], cov_beta
+            except Exception:
+                pass
+
+        model, scaler, features, cov_beta = train_model_pipeline()
+        if model is not None:
+            h = get_current_hash()
+            _atomic_write(MODEL_FILE, (model, scaler, features, h, cov_beta, None, None, _training_manifest(h, features)))
+            print(f"Model trained and saved to {MODEL_FILE}", file=sys.stderr)
+        return model, scaler, features, cov_beta
+    finally:
+        _release_lock()
+
+def validate_assessment_input(data):
+    if not isinstance(data, dict):
+        raise ValueError("Input must be an object")
+
+    validators = {
+        "age": {"type": int, "min": 1, "max": 120},
+        "gender": {"type": str},
+        "hypertension": {"type": bool},
+        "heartDisease": {"type": bool},
+        "bmi": {"type": (int, float), "min": 10, "max": 60},
+        "hba1cLevel": {"type": (int, float), "min": 3, "max": 15},
+        "bloodGlucoseLevel": {"type": (int, float), "min": 50, "max": 400},
+        "smokingHistory": {
+            "type": str,
+            "in": ("never", "former", "current", "No Info"),
+        },
+    }
+
+    if data.get("gender") not in ("Male", "Female"):
+        raise ValueError("Invalid value for gender")
+    for field, rules in validators.items():
+        if field not in data or data[field] is None:
+            raise ValueError(f"Missing or null field: {field}")
+
+        value = data[field]
+        if not isinstance(value, rules["type"]) or (field in ("age", "bmi", "hba1cLevel", "bloodGlucoseLevel") and isinstance(value, bool)):
+            raise ValueError(f"Invalid type for {field}")
+
+        if field in ("bmi", "hba1cLevel", "bloodGlucoseLevel") and not math.isfinite(value):
+            raise ValueError(f"Invalid value for {field}")
+
+        if isinstance(value, str) and not value:
+            raise ValueError(f"Invalid value for {field}")
+
+        if "in" in rules and value not in rules["in"]:
+            raise ValueError(f"Invalid value for {field}")
+
+        if "min" in rules and value < rules["min"]:
+            raise ValueError(f"Invalid value for {field}")
+
+        if "max" in rules and value > rules["max"]:
+            raise ValueError(f"Invalid value for {field}")
+
+    return data
+
+@phi_redaction_middleware
+def interpret_predictions_batch(model, scaler, features, input_data_list, cov_beta=None):
+    """Vectorized batch prediction for a list of patient records using NumPy."""
+    if model is None:
+        return {"error": "Dataset missing. Please ensure diabetes_dataset.csv is present."}
+
+    n_samples = len(input_data_list)
+    n_features = len(features)
+
+    # Pre-allocate a 2D NumPy array of zeros
+    X_input = np.zeros((n_samples, n_features))
+
+    # Map feature names to their indices in the feature list for O(1) lookup
+    feature_indices = {feat: idx for idx, feat in enumerate(features)}
+
+    # We will build arrays for warnings and cache hits
+    results = [None] * n_samples
+    cache = get_cache()
+    
+    # We first extract index values and fill the numpy matrix in a single pass
+    imputed_fields_list = [[] for _ in range(n_samples)]
+    for i, input_data in enumerate(input_data_list):
+        cached = cache.get(input_data)
+        if cached is not None:
+            results[i] = cached
+            continue
+            
+        def _safe_get(data, key, default_val, field_label=None):
+            val = data.get(key)
+            if val is None or val == "" or pd.isna(val):
+                if field_label:
+                    imputed_fields_list[i].append(field_label)
+                return default_val
+            return val
+
+        # Fill the non-dummy features using the pre-mapped indices
+        X_input[i, feature_indices['age']] = _safe_get(input_data, 'age', 40)
+        X_input[i, feature_indices['hypertension']] = int(_safe_get(input_data, 'hypertension', False))
+        X_input[i, feature_indices['heart_disease']] = int(_safe_get(input_data, 'heartDisease', False))
+        X_input[i, feature_indices['bmi']] = float(_safe_get(input_data, 'bmi', 25.0, 'BMI'))
+        X_input[i, feature_indices['HbA1c_level']] = float(_safe_get(input_data, 'hba1cLevel', 5.5, 'HbA1c Level'))
+        X_input[i, feature_indices['blood_glucose_level']] = float(_safe_get(input_data, 'bloodGlucoseLevel', 100.0, 'Blood Glucose Level'))
+        X_input[i, feature_indices['insulin']] = float(_safe_get(input_data, 'insulin', 80.0, 'Insulin Level'))
+        X_input[i, feature_indices['skin_thickness']] = float(_safe_get(input_data, 'skinThickness', 20.0, 'Skin Thickness'))
+        
+        gender_value = _safe_get(input_data, 'gender', 'Female')
+        X_input[i, feature_indices['gender_Male']] = 1 if gender_value == 'Male' else 0
+        
+        smoking_history = _safe_get(input_data, 'smokingHistory', 'never')
+        smoke_col = f"smoke_{smoking_history}"
+        if smoke_col in feature_indices:
+            X_input[i, feature_indices[smoke_col]] = 1
+            
+    # Now we perform vectorized scaling and prediction for all samples in one go!
+    uncached_indices = [idx for idx, res in enumerate(results) if res is None]
+    
+    if uncached_indices:
+        X_uncached = X_input[uncached_indices]
+        X_scaled = scaler.transform(X_uncached)
+        classes = list(getattr(model, "classes_", [0, 1]))
+        if 1 not in classes:
+            raise ValueError("Trained model does not contain the positive class")
+        probs = model.predict_proba(X_scaled)[:, classes.index(1)]
+        
+        # Calculate vectorized confidence intervals if cov_beta is available
+        if cov_beta is not None:
+            # Prepend 1 for intercept to all samples
+            x0 = np.hstack((np.ones((len(uncached_indices), 1)), X_scaled))
+            
+            # Vectorized variance calculation: diag(x0 * cov_beta * x0^T)
+            # Efficiently computing diagonal elements only
+            variance = np.sum(x0.dot(cov_beta) * x0, axis=1)
+            se_logits = np.sqrt(np.maximum(0.0, variance))
+            
+            # Vectorized decision function
+            z0 = model.decision_function(X_scaled)
+            
+            lower_logits = z0 - 1.96 * se_logits
+            upper_logits = z0 + 1.96 * se_logits
+            
+            lower_probs = 1.0 / (1.0 + np.exp(-lower_logits))
+            upper_probs = 1.0 / (1.0 + np.exp(-upper_logits))
+            
+            lower_cis = np.round(np.clip(lower_probs * 100, 0.0, 100.0), 1)
+            upper_cis = np.round(np.clip(upper_probs * 100, 0.0, 100.0), 1)
+        else:
+            # Fallback to binomial standard error
+            ses = (probs * (1 - probs)) ** 0.5
+            margins = np.round(1.96 * ses * 100, 1)
+            risk_scores = np.round(probs * 100, 1)
+            lower_cis = np.round(np.maximum(0.0, risk_scores - margins), 1)
+            upper_cis = np.round(np.minimum(100.0, risk_scores + margins), 1)
+            
+        # Post-process and construct results for uncached samples
+        for i, original_idx in enumerate(uncached_indices):
+            input_data = input_data_list[original_idx]
+            prob = probs[i]
+            risk_score = round(prob * 100, 1)
+            lower_ci = lower_cis[i]
+            upper_ci = upper_cis[i]
+            confidence_interval = f"{lower_ci}% - {upper_ci}%"
+            
+            # Logistic regression coefficients are learned on standardized
+            # features, so contributions must use the same scaled values.
+            contributions = model.coef_[0] * X_scaled[i]
+            # Combine one-hot smoking columns into one interpretable factor.
+            grouped = {}
+            for idx, value in enumerate(contributions):
+                feat = features[idx]
+                name = (
+                    'HbA1c' if feat == 'HbA1c_level' else
+                    'Blood Glucose' if feat == 'blood_glucose_level' else
+                    'Smoking' if feat.startswith('smoke_') else
+                    'Heart Disease' if feat == 'heart_disease' else
+                    'Hypertension' if feat == 'hypertension' else
+                    'Gender' if feat == 'gender_Male' else
+                    feat.replace('_', ' ').title()
+                )
+                grouped[name] = grouped.get(name, 0.0) + float(value)
+            ordered_factors = sorted(grouped.items(), key=lambda item: abs(item[1]), reverse=True)
+            top_factors = []
+            for fname, val in ordered_factors:
+                if abs(val) < 0.10:
+                    continue
+                impact = "positive" if val > 0 else "negative"
+                top_factors.append({
+                    "name": fname,
+                    "impact": impact,
+                    "logOdds": round(val, 3),
+                    "oddsRatio": round(float(np.exp(val)), 2),
+                    "description": "Raises estimated risk" if val > 0 else "Lowers estimated risk"
+                })
+                if len(top_factors) == 4:
+                    break
+                    
+            if risk_score < 20:
+                cat = "LOW"
+            elif risk_score < 50:
+                cat = "MODERATE"
+            else:
+                cat = "HIGH"
+                
+            clinician_advice = []
+            patient_advice = []
+            if cat == "LOW":
+                clinician_advice.append("Monitor annually. No immediate intervention required.")
+                patient_advice.append("Keep up the good work! Continue your healthy lifestyle and routine checkups.")
+            elif cat == "MODERATE":
+                clinician_advice.append("Recommend lifestyle counseling. Repeat HbA1c in 6 months.")
+                patient_advice.append("Consider increasing physical activity and managing your diet to lower your risk.")
+            else:
+                clinician_advice.append("Recommend confirmatory diagnostic evaluation and clinician review.")
+                patient_advice.append("Please consult your healthcare professional to discuss follow-up testing and prevention options.")
+
+            for factor in top_factors:
+                if factor["impact"] == "positive":
+                    fname = factor["name"]
+                    if fname == "HbA1c" and float(input_data.get("hba1cLevel", 0) or 0) >= 5.7:
+                        clinician_advice.append("Review the elevated HbA1c and confirm results using the applicable clinical protocol.")
+                        patient_advice.append("Ask your healthcare professional what this HbA1c result means and whether follow-up testing is appropriate.")
+                    elif fname == "Blood Glucose" and float(input_data.get("bloodGlucoseLevel", 0) or 0) >= 140:
+                        clinician_advice.append("Confirm glucose context and review the result using the applicable clinical protocol.")
+                        patient_advice.append("Discuss this glucose reading and its fasting or meal context with your healthcare professional.")
+                    elif fname == "BMI" and float(input_data.get("bmi", 0) or 0) >= 25:
+                        clinician_advice.append("Discuss weight management strategies and nutritional counseling.")
+                        patient_advice.append("Work on achieving a healthier weight through balanced nutrition and regular exercise.")
+                    elif fname == "Hypertension" and bool(input_data.get("hypertension")):
+                        clinician_advice.append("Optimize blood pressure management and monitor for complications.")
+                        patient_advice.append("Regularly check your blood pressure and reduce salt intake.")
+                    elif fname == "Smoking":
+                        # Smoking coefficients are a synthetic-data artifact and
+                        # should not drive patient-facing advice.
+                        continue
+                    elif fname == "Heart Disease" and bool(input_data.get("heartDisease")):
+                        clinician_advice.append("Coordinate care with cardiology and manage cardiovascular risk factors.")
+                        patient_advice.append("Manage your heart health as it is closely linked to diabetes risk.")
+                    elif fname == "Age" and int(input_data.get("age", 0) or 0) >= 45:
+                        clinician_advice.append("Consider age-related metabolic changes in the management plan.")
+                        patient_advice.append("As you get older, it's more important to stay active and monitor your health.")
+            
+            result = {
+                "riskScore": risk_score,
+                "riskCategory": cat,
+                "factors": top_factors,
+                "clinicianAdvice": clinician_advice,
+                "patientAdvice": patient_advice,
+                "is_partial_data": len(imputed_fields_list[original_idx]) > 0,
+                "imputed_fields": imputed_fields_list[original_idx]
+            }
+            try:
+                with open(MODEL_FILE, "rb") as model_file:
+                    model_version = hashlib.sha256(model_file.read()).hexdigest()[:16]
+            except OSError:
+                model_version = None
+            result["prediction_method"] = "ml_model"
+            result["model_version"] = model_version
+            result["fallback_used"] = False
+            cache.set(input_data, result)
+            results[original_idx] = result
+            
+    try:
+        del X_input, imputed_fields_list
+        if 'X_uncached' in locals():
+            del X_uncached
+        if 'X_scaled' in locals():
+            del X_scaled
+        if 'probs' in locals():
+            del probs
+        gc.collect()
+    except Exception:
+        pass
+        
+    return results
+
+@phi_redaction_middleware
+def interpret_prediction(model, scaler, features, input_data, cov_beta=None):
+    """Interprets a single patient's data, yielding clinician and patient views."""
+    res = interpret_predictions_batch(model, scaler, features, [input_data], cov_beta)
+    if isinstance(res, dict):
+        return res
+    if isinstance(res, list) and len(res) > 0:
+        return res[0]
+    return res
+
+@phi_redaction_middleware
+def counterfactual_analysis(model, scaler, features, input_data, cov_beta=None):
+    """
+    Performs what-if counterfactual analysis.
+    input_data: dict with 'original' (full assessment) and 'perturbations' (list of overrides).
+    Returns original prediction + ranked perturbation results.
+    """
+    original = input_data["original"]
+    perturbations = input_data.get("perturbations", [])
+
+    # Build all variants: original + each perturbation applied on top of original
+    variants = [original]
+    labels = ["original"]
+    for p in perturbations:
+        variant = dict(original)
+        for key, value in p.items():
+            if key in original:
+                variant[key] = value
+        variants.append(variant)
+        desc = "; ".join(f"{k}:{original.get(k, '?')}->{p[k]}" for k in p)
+        labels.append(desc)
+
+    results = interpret_predictions_batch(model, scaler, features, variants, cov_beta)
+    if isinstance(results, dict) and "error" in results:
+        return results
+
+    original_result = results[0]
+    perturbation_results = []
+    for i in range(1, len(results)):
+        r = results[i]
+        risk_reduction = round(original_result["riskScore"] - r["riskScore"], 1)
+        perturbation_results.append({
+            "delta": labels[i],
+            "riskScore": r["riskScore"],
+            "riskCategory": r["riskCategory"],
+            "factors": r.get("factors", []),
+            "riskReduction": risk_reduction,
+        })
+
+    perturbation_results.sort(key=lambda x: x["riskReduction"], reverse=True)
+
+    return {
+        "original": original_result,
+        "perturbations": perturbation_results,
+        "ranked": perturbation_results,
+    }
+
+def get_counterfactuals(model, scaler, features, input_data, cov_beta=None):
+    """
+    Generates hypothetical inputs with healthier values and returns the top impactful changes.
+    """
+    perturbations = []
+    
+    # 1. BMI: Reduce by 2 points (if BMI > 25)
+    bmi = input_data.get('bmi')
+    if bmi is not None and bmi > 25:
+        perturbations.append({'bmi': max(25.0, float(bmi) - 2.0)})
+        
+    # 2. Blood Glucose: Reduce by 10 points (if > 100)
+    bg = input_data.get('bloodGlucoseLevel')
+    if bg is not None and bg > 100:
+        perturbations.append({'bloodGlucoseLevel': max(100.0, float(bg) - 10.0)})
+        
+    # 3. HbA1c: Reduce by 0.5 points (if > 5.7)
+    hba1c = input_data.get('hba1cLevel')
+    if hba1c is not None and hba1c > 5.7:
+        perturbations.append({'hba1cLevel': max(5.7, float(hba1c) - 0.5)})
+        
+    # 4. Smoking Status: Change to former if current
+    smoke = input_data.get('smokingHistory')
+    if smoke == 'current':
+        perturbations.append({'smokingHistory': 'former'})
+
+    # 5. Hypertension: Manage/Control
+    if input_data.get('hypertension') in [1, True, "1", "true"]:
+        perturbations.append({'hypertension': False})
+
+    if not perturbations:
+        original = interpret_prediction(model, scaler, features, input_data, cov_beta)
+        return {
+            "original": original,
+            "recommendations": []
+        }
+        
+    data = {
+        "original": input_data,
+        "perturbations": perturbations
+    }
+    
+    result = counterfactual_analysis(model, scaler, features, data, cov_beta)
+    ranked = result.get("ranked", [])
+    
+    # Generate actionable messages for top 2
+    recommendations = []
+    for item in ranked[:2]:
+        if item["riskReduction"] <= 0:
+            continue
+        
+        delta_str = item["delta"]
+        
+        action = "Making a healthy change"
+        if "bmi:" in delta_str:
+            action = "Reducing your BMI by 2 points"
+        elif "bloodGlucoseLevel:" in delta_str:
+            action = "Lowering your blood glucose by 10 points"
+        elif "hba1cLevel:" in delta_str:
+            action = "Lowering your HbA1c by 0.5%"
+        elif "smokingHistory:" in delta_str:
+            action = "Quitting smoking"
+        elif "hypertension:" in delta_str:
+            action = "Managing your hypertension effectively"
+            
+        msg = f"{action} could lower your overall diabetes risk score by {item['riskReduction']}%."
+        
+        recommendations.append({
+            "action": action,
+            "riskReduction": item["riskReduction"],
+            "newRiskScore": item["riskScore"],
+            "message": msg
+        })
+        
+    return {
+        "original": result.get("original"),
+        "recommendations": recommendations
+    }
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "predict_file":
+        if len(sys.argv) > 2:
+            # SECURITY: Resolve the input path and validate it is within an
+            # allowed directory to prevent path traversal attacks.
+            # The Node backend always writes temp files to the OS temp directory;
+            # we also allow the script directory and CWD for test/CLI usage.
+            raw_input_path = sys.argv[2]
+            resolved_input = os.path.realpath(raw_input_path)
+            _allowed_dirs = {
+                os.path.realpath(SCRIPT_DIR),
+                os.path.realpath(tempfile.gettempdir()),
+                os.path.realpath(os.getcwd()),
+            }
+            if not any(
+                resolved_input == d or resolved_input.startswith(d + os.sep)
+                for d in _allowed_dirs
+            ):
+                print(
+                    "Error: Access denied. File path resolves outside allowed directories.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            with open(resolved_input, 'rb') as f:
+                raw_bytes = f.read()
+            from app.utils.text_sanitizer import sanitize_text
+            sanitized_str = sanitize_text(raw_bytes)
+            data = json.loads(sanitized_str)
+        else:
+            raw_bytes = sys.stdin.buffer.read()
+            from app.utils.text_sanitizer import sanitize_text
+            sanitized_str = sanitize_text(raw_bytes)
+            data = json.loads(sanitized_str)
+        model, scaler, features, cov_beta = get_model()
+        if isinstance(data, list):
+            results = interpret_predictions_batch(model, scaler, features, data, cov_beta)
+            print(json.dumps(results))
+        else:
+            result = interpret_prediction(model, scaler, features, data, cov_beta)
+            print(json.dumps(result))
+    elif len(sys.argv) > 1 and sys.argv[1] == "daemon":
+        model, scaler, features, cov_beta = get_model()
+        try:
+            with open(MODEL_FILE, "rb") as model_file:
+                model_version = hashlib.sha256(model_file.read()).hexdigest()[:16]
+        except OSError:
+            model_version = None
+        training_manifest = None
+        try:
+            with open(MODEL_FILE + ".manifest.json", "r", encoding="utf-8") as manifest_file:
+                training_manifest = json.load(manifest_file)
+        except (OSError, json.JSONDecodeError):
+            pass
+        print(json.dumps({"type": "ready", "model_loaded": model is not None, "model_version": model_version, "training_manifest": training_manifest}), flush=True)
+        from app.utils.text_sanitizer import sanitize_text
+        for line_bytes in sys.stdin.buffer:
+            line_str = sanitize_text(line_bytes).strip()
+            if not line_str:
+                continue
+            try:
+                request = json.loads(line_str)
+                request_id = request.get("requestId")
+                request_type = request.get("type", "predict")
+                
+                if request_type == "extract":
+                    from app.services.clinical_nlp import BioBERTClinicalExtractor
+                    extractor = BioBERTClinicalExtractor()
+                    text = request.get("text", "")
+                    # Sanitize text input securely using existing utility
+                    from app.utils.text_sanitizer import sanitize_text
+                    sanitized_text = sanitize_text(text)
+                    prediction = extractor.extract(sanitized_text)
+                else:
+                    input_data = request.get("input")
+                    if isinstance(input_data, list):
+                        validated_input = [
+                            validate_assessment_input(item)
+                            for item in input_data
+                        ]
+                        prediction = interpret_predictions_batch(
+                            model,
+                            scaler,
+                            features,
+                            validated_input,
+                            cov_beta,
+                        )
+                    else:
+                        validated_input = validate_assessment_input(input_data)
+                        prediction = interpret_prediction(
+                            model,
+                            scaler,
+                            features,
+                            validated_input,
+                            cov_beta,
+                        )
+                
+                response = {
+                    "requestId": request_id,
+                    "prediction": prediction
+                }
+                print(json.dumps(response), flush=True)
+            except Exception as e:
+                try:
+                    request_id = request.get("requestId") if 'request' in locals() else None
+                except:
+                    request_id = None
+                response = {
+                    "requestId": request_id,
+                    "error": str(e)
+                }
+                print(json.dumps(response), flush=True)
+    elif len(sys.argv) > 1 and sys.argv[1] == "counterfactual":
+        if len(sys.argv) > 2:
+            with open(sys.argv[2], 'rb') as f:
+                raw_bytes = f.read()
+            from app.utils.text_sanitizer import sanitize_text
+            sanitized_str = sanitize_text(raw_bytes)
+            data = json.loads(sanitized_str)
+        else:
+            raw_bytes = sys.stdin.buffer.read()
+            from app.utils.text_sanitizer import sanitize_text
+            sanitized_str = sanitize_text(raw_bytes)
+            data = json.loads(sanitized_str)
+        model, scaler, features, cov_beta = get_model()
+        result = counterfactual_analysis(model, scaler, features, data, cov_beta)
+        print(json.dumps(result))
+    elif len(sys.argv) > 1 and sys.argv[1] == "counterfactual_auto":
+        if len(sys.argv) > 2:
+            with open(sys.argv[2], 'rb') as f:
+                raw_bytes = f.read()
+            from app.utils.text_sanitizer import sanitize_text
+            sanitized_str = sanitize_text(raw_bytes)
+            data = json.loads(sanitized_str)
+        else:
+            raw_bytes = sys.stdin.buffer.read()
+            from app.utils.text_sanitizer import sanitize_text
+            sanitized_str = sanitize_text(raw_bytes)
+            data = json.loads(sanitized_str)
+        model, scaler, features, cov_beta = get_model()
+        result = get_counterfactuals(model, scaler, features, data, cov_beta)
+        print(json.dumps(result))
+    elif len(sys.argv) > 1 and sys.argv[1] == "train_and_evaluate":
+        train_and_evaluate()
+    elif len(sys.argv) > 1 and sys.argv[1] == "verify":
+        model, scaler, features, cov_beta = get_model()
+        if model is None or scaler is None or not features or cov_beta is None:
+            raise SystemExit("Model verification failed.")
+        print("Model loaded and verified.", flush=True)
+    elif len(sys.argv) > 1 and sys.argv[1] == "train":
+        if not os.path.exists(DATA_FILE):
+            print("Dataset not found. Creating synthetic dataset...")
+            create_synthetic_data()
+        success = save_pretrained_model()
+        if success:
+            model, scaler, features, cov_beta = get_model()
+            print(f"Features used: {features}")
+            print(f"Model Coefficients (Weights): {model.coef_[0]}")
+    else:
+        print("Running complete exploratory and modeling pipeline...\n")
+        if not os.path.exists(DATA_FILE):
+            print("Dataset not found. Creating synthetic dataset...")
+            create_synthetic_data()
+        model, scaler, features, cov_beta = get_model()
+        if model is None:
+            print("Failed to load dataset.")
+        else:
+            try:
+                df = read_csv_safely(DATA_FILE)
+                generate_correlation_heatmap(df)
+            except SafeCSVError as e:
+                print(f"Error generating correlation heatmap: {e}", file=sys.stderr)
+            
+            print("Model trained successfully.")
+            print(f"Features used: {features}")
+            print(f"Model Coefficients (Weights): {model.coef_[0]}")
+            print("Use 'python analyze.py predict_file <json_file>' to run a prediction.")

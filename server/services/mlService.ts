@@ -1,0 +1,1061 @@
+import { createHash, randomUUID } from "crypto";
+import { execFile, spawn, ChildProcess } from "child_process";
+import { existsSync } from "fs";
+import { access } from "fs/promises";
+import { writeFile, unlink } from "fs/promises";
+import os from "os";
+import path from "path";
+import { logger } from "../logger";
+import readline from "readline";
+
+// ESM-compatible path resolution for analyze.py
+const analyzePyPath = path.resolve(process.cwd(), "analyze.py");
+
+interface QueuedEntry {
+  execute: () => void;
+  abort: () => void;
+}
+
+interface QueueNode {
+  entry: QueuedEntry;
+  next: QueueNode | null;
+  prev: QueueNode | null;
+}
+
+/** Linked list-based queue with O(1) enqueue/dequeue/remove operations. */
+class LinkedQueue {
+  private head: QueueNode | null = null;
+  private tail: QueueNode | null = null;
+  private _length = 0;
+
+  enqueue(entry: QueuedEntry): void {
+    const node: QueueNode = { entry, next: null, prev: null };
+    if (!this.tail) {
+      this.head = this.tail = node;
+    } else {
+      node.prev = this.tail;
+      this.tail.next = node;
+      this.tail = node;
+    }
+    this._length++;
+  }
+
+  dequeue(): QueuedEntry | null {
+    if (!this.head) return null;
+    const node = this.head;
+    this.head = node.next;
+    if (this.head) this.head.prev = null;
+    else this.tail = null;
+    this._length--;
+    return node.entry;
+  }
+
+  remove(entry: QueuedEntry): boolean {
+    let current = this.head;
+    while (current) {
+      if (current.entry === entry) {
+        if (current.prev) current.prev.next = current.next;
+        else this.head = current.next;
+        if (current.next) current.next.prev = current.prev;
+        else this.tail = current.prev;
+        this._length--;
+        return true;
+      }
+      current = current.next;
+    }
+    return false;
+  }
+
+  clear(): QueuedEntry[] {
+    const entries: QueuedEntry[] = [];
+    let current = this.head;
+    while (current) {
+      entries.push(current.entry);
+      current = current.next;
+    }
+    this.head = this.tail = null;
+    this._length = 0;
+    return entries;
+  }
+
+  get length(): number {
+    return this._length;
+  }
+}
+
+/** A concurrency-limiting semaphore with bounded queue, backpressure, and metrics. */
+export class SimpleSemaphore {
+  private activeCount = 0;
+  private queue: LinkedQueue;
+  private maxQueueSize: number;
+  private rejectedCount = 0;
+  private totalProcessed = 0;
+  private totalTimeouts = 0;
+  private totalWaitTime = 0;
+  private waitTimeSamples = 0;
+
+  constructor(private maxConcurrency: number, maxQueueSize: number = 100) {
+    this.queue = new LinkedQueue();
+    this.maxQueueSize = maxQueueSize;
+  }
+
+  async acquire(timeoutMs?: number): Promise<() => void> {
+    if (this.activeCount < this.maxConcurrency) {
+      this.activeCount++;
+      return () => this.release();
+    }
+
+    if (this.queue.length >= this.maxQueueSize) {
+      this.rejectedCount++;
+      const err = new Error(
+        `Server is busy. ${this.queue.length} requests waiting, ` +
+        `${this.activeCount} active. Please try again later.`
+      ) as Error & { statusCode: number; retryAfter: number };
+      err.statusCode = 503;
+      err.retryAfter = Math.min(30, this.queue.length);
+      throw err;
+    }
+
+    const enqueuedAt = Date.now();
+
+    return new Promise<() => void>((resolve, reject) => {
+      const entry: QueuedEntry = {
+        execute: () => {
+          this.totalWaitTime += Date.now() - enqueuedAt;
+          this.waitTimeSamples++;
+          this.totalProcessed++;
+          resolve(() => this.release());
+        },
+        abort: () => reject(new Error("Semaphore acquisition aborted")),
+      };
+      this.queue.enqueue(entry);
+
+      if (timeoutMs && timeoutMs > 0) {
+        setTimeout(() => {
+          if (this.queue.remove(entry)) {
+            this.totalTimeouts++;
+            reject(new Error("Semaphore acquisition timed out"));
+          }
+        }, timeoutMs);
+      }
+    });
+  }
+
+  release(): void {
+    this.activeCount--;
+    const next = this.queue.dequeue();
+    if (next) {
+      this.activeCount++;
+      next.execute();
+    }
+  }
+
+  async run<T>(fn: () => Promise<T>, timeoutMs?: number): Promise<T> {
+    const release = await this.acquire(timeoutMs);
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  drain(reason: string): void {
+    const entries = this.queue.clear();
+    for (const entry of entries) {
+      entry.abort();
+    }
+  }
+
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  get active(): number {
+    return this.activeCount;
+  }
+
+  get totalRejected(): number {
+    return this.rejectedCount;
+  }
+
+  getMetrics() {
+    return {
+      activeCount: this.activeCount,
+      queueLength: this.queue.length,
+      maxQueueSize: this.maxQueueSize,
+      maxConcurrency: this.maxConcurrency,
+      totalProcessed: this.totalProcessed,
+      totalRejected: this.rejectedCount,
+      totalTimeouts: this.totalTimeouts,
+      averageWaitTimeMs: this.waitTimeSamples > 0
+        ? Math.round(this.totalWaitTime / this.waitTimeSamples)
+        : 0,
+    };
+  }
+}
+
+export function getRequestTimeout(): number {
+  return parseInt(process.env.REQUEST_TIMEOUT || process.env.ML_TIMEOUT_MS || "5000", 10);
+}
+
+export function getMaxRetries(): number {
+  return parseInt(process.env.MAX_RETRIES || "3", 10);
+}
+
+export function getRetryBackoffFactor(): number {
+  return parseFloat(process.env.RETRY_BACKOFF_FACTOR || "2");
+}
+
+const maxConcurrency = parseInt(process.env.ML_MAX_CONCURRENCY || "2", 10);
+const mlConcurrency = new SimpleSemaphore(maxConcurrency);
+
+export { mlConcurrency };
+
+/**
+ * Tracks currently running inference requests to prevent
+ * duplicate concurrent ML execution for identical payloads.
+ */
+const activeInferenceRequests = new Set<string>();
+
+function canonicalStringify(obj: unknown): string {
+  if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
+  if (Array.isArray(obj)) return "[" + obj.map(canonicalStringify).join(",") + "]";
+  const keys = Object.keys(obj as Record<string, unknown>).sort();
+  const pairs = keys.map(k => JSON.stringify(k) + ":" + canonicalStringify((obj as Record<string, unknown>)[k]));
+  return "{" + pairs.join(",") + "}";
+}
+
+/**
+ * Computes a deterministic SHA-256 fingerprint for a request payload combined with a user ID. Used to identify duplicate concurrent requests and key caches.
+ * @param payload - The payload parameter.
+ * @param userId - The userId parameter.
+ * @returns The result of the operation.
+ */
+export function generateRequestFingerprint(payload: unknown, userId: string): string {
+  return createHash("sha256")
+    .update(`${userId}::${canonicalStringify(payload)}`)
+    .digest("hex");
+}
+
+/**
+ * Resolves the absolute path to the local Python virtual environment executable depending on the host platform.
+ * @returns The result of the operation.
+ */
+export function getPythonExecutable() {
+  const candidates =
+    process.platform === "win32"
+      ? [
+          path.resolve(".venv", "Scripts", "python.exe"),
+          path.resolve("venv", "Scripts", "python.exe"),
+        ]
+      : [
+          path.resolve(".venv", "bin", "python"),
+          path.resolve("venv", "bin", "python"),
+        ];
+
+  const found = candidates.find((candidate) => existsSync(candidate));
+  if (found) return found;
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+export let isPythonAvailable = true;
+
+/**
+ * Asynchronously polls Python execution response, disabling the ML pipeline fallback flag if unresponsive.
+ * @returns The result of the operation.
+ */
+export function checkPythonAvailability() {
+  execFile(getPythonExecutable(), ["--version"], { timeout: 2000 }, (error) => {
+    if (error) {
+      logger.warn("Python executable not found or unresponsive; ML inference is unavailable.");
+      isPythonAvailable = false;
+    } else {
+      isPythonAvailable = true;
+    }
+  });
+}
+
+// Start the check immediately
+checkPythonAvailability();
+
+export interface PredictionResult {
+  riskScore: number;
+  riskCategory: "LOW" | "MODERATE" | "HIGH";
+  factors: Array<{
+    name: string;
+    impact: "positive" | "negative";
+    description: string;
+    logOdds?: number;
+    oddsRatio?: number;
+  }>;
+  clinicianAdvice: string[];
+  patientAdvice: string[];
+  confidenceInterval?: string;
+  modelConfidence?: number;
+  error?: string;
+  disclaimer?: string;
+  prediction_method?: "ml_model" | "rule_based";
+  model_version?: string | null;
+  fallback_used?: boolean;
+}
+
+function ruleBasedModeEnabled(): boolean {
+  return process.env.PREDICTION_MODE === "rule-based";
+}
+
+/**
+ * Rule-based clinical fallback calculator implementing ADA-like heuristics for diabetes risk score computation when the ML daemon fails.
+ * @param input - The input parameter.
+ * @returns The result of the operation.
+ */
+export function calculateClinicalFallback(input: unknown): PredictionResult | PredictionResult[] {
+  if (Array.isArray(input)) {
+    return input.map((item) => calculateClinicalFallback(item)) as PredictionResult[];
+  }
+  const anyInput = input as Record<string, unknown>;
+  let points = 0;
+
+  const factors: Array<{
+    name: string;
+    impact: "positive" | "negative";
+    description: string;
+  }> = [];
+
+  const age = Number(anyInput.age) || 0;
+  if (age > 60) {
+    points += 20;
+    factors.push({
+      name: "Age > 60",
+      impact: "positive",
+      description: "Elderly demographic is associated with higher metabolic risk.",
+    });
+  } else if (age > 45) {
+    points += 10;
+    factors.push({
+      name: "Age > 45",
+      impact: "positive",
+      description: "Age over 45 increases baseline diabetes risk.",
+    });
+  }
+
+  const bmi = Number(anyInput.bmi) || 0;
+  if (bmi >= 30) {
+    points += 25;
+    factors.push({
+      name: "Obese (BMI >= 30)",
+      impact: "positive",
+      description: "Elevated body mass index drives insulin resistance.",
+    });
+  } else if (bmi >= 25) {
+    points += 10;
+    factors.push({
+      name: "Overweight (BMI 25-30)",
+      impact: "positive",
+      description: "Slightly elevated BMI increases metabolic strain.",
+    });
+  } else if (bmi > 0 && bmi < 18.5) {
+    factors.push({
+      name: "Underweight (BMI < 18.5)",
+      impact: "negative",
+      description: "Lower body weight correlates with reduced metabolic risk.",
+    });
+  }
+
+  const hba1c = Number(anyInput.hba1cLevel) || 0;
+  if (hba1c >= 6.5) {
+    points += 35;
+    factors.push({
+      name: "Diabetic HbA1c Range",
+      impact: "positive",
+      description: "HbA1c level >= 6.5% falls within the diabetic range.",
+    });
+  } else if (hba1c >= 5.7) {
+    points += 20;
+    factors.push({
+      name: "Prediabetic HbA1c",
+      impact: "positive",
+      description: "HbA1c level (5.7-6.4%) suggests impaired fasting glucose.",
+    });
+  }
+
+  const glucose = Number(anyInput.bloodGlucoseLevel) || 0;
+  if (glucose >= 126) {
+    points += 20;
+    factors.push({
+      name: "Hyperglycemia",
+      impact: "positive",
+      description: "Fasting glucose >= 126 mg/dL indicates metabolic distress.",
+    });
+  } else if (glucose >= 100) {
+    points += 10;
+    factors.push({
+      name: "Elevated Fasting Glucose",
+      impact: "positive",
+      description: "Glucose (100-125 mg/dL) shows early glucose intolerance.",
+    });
+  }
+
+  if (anyInput.hypertension) {
+    points += 10;
+    factors.push({
+      name: "Hypertension",
+      impact: "positive",
+      description: "High blood pressure is a known diabetes comorbidity.",
+    });
+  }
+
+  if (anyInput.heartDisease) {
+    points += 10;
+    factors.push({
+      name: "Heart Disease",
+      impact: "positive",
+      description: "Prior cardiac history links with metabolic syndrome.",
+    });
+  }
+
+  const riskScore = Math.max(1.0, Math.min(99.0, points));
+  let riskCategory: "LOW" | "MODERATE" | "HIGH" = "LOW";
+  if (riskScore >= 50) riskCategory = "HIGH";
+  else if (riskScore >= 20) riskCategory = "MODERATE";
+
+  return {
+    riskScore,
+    riskCategory,
+    factors:
+      factors.length > 0
+        ? factors
+        : [
+            {
+              name: "Stable Profile",
+              impact: "negative",
+              description: "No major clinical risk drivers detected.",
+            },
+          ],
+    clinicianAdvice:
+      riskCategory === "HIGH"
+        ? ["High risk. Refer for diagnostic oral glucose tolerance testing (OGTT)."]
+        : riskCategory === "MODERATE"
+        ? ["Moderate risk. Suggest nutritional counseling and review in 6 months."]
+        : ["Low risk. Encourage standard yearly wellness checks."],
+    patientAdvice:
+      riskCategory === "HIGH"
+        ? ["Please schedule an appointment with your clinician to check diagnostic lab ranges."]
+        : riskCategory === "MODERATE"
+        ? ["Making positive dietary changes and staying active helps lower type 2 diabetes risk."]
+        : ["Continue maintaining a healthy, balanced lifestyle and regular physical activity."],
+    prediction_method: "rule_based",
+    model_version: null,
+    fallback_used: true,
+  };
+}
+
+interface PendingRequest {
+  resolve: (value: PredictionResult | PredictionResult[]) => void;
+  reject: (reason: Error | string) => void;
+  timeoutId: NodeJS.Timeout;
+}
+
+const MAX_DAEMON_RESTART_ATTEMPTS = 5;
+const DAEMON_RESTART_BASE_DELAY_MS = 1000;
+
+class PythonDaemonManager {
+  private process: ChildProcess | null = null;
+  private rl: readline.Interface | null = null;
+  private pendingRequests = new Map<string, PendingRequest>();
+  private isRestarting = false;
+  private restartAttempts = 0;
+  private maxRestartAttempts = 10;
+  private baseDelayMs = 1000;
+  private maxDelayMs = 300000;
+  private daemonStatus: 'stopped' | 'running' | 'crashed' = 'stopped';
+  private fallbackMode = false;
+  private circuitBreakerState: 'closed' | 'open' | 'half-open' = 'closed';
+  private circuitBreakerFailures = 0;
+  private circuitBreakerThreshold = 10;
+  private circuitBreakerResetTimeoutMs = 60000;
+  private lastFailureTime = 0;
+  private daemonStartTime = 0;
+  private lastCrashTime = 0;
+  private modelVersion: string | null = null;
+  private modelLoaded = false;
+  private trainingManifest: Record<string, unknown> | null = null;
+  private readinessWaiters = new Set<(loaded: boolean) => void>();
+  private readinessPromise: Promise<boolean> | null = null;
+
+  private init() {
+    if (this.process) return;
+
+    if (this.isCircuitBreakerOpen()) {
+      logger.warn("Circuit breaker is open — refusing to start daemon");
+      this.fallbackMode = true;
+      return;
+    }
+
+    logger.info("Starting persistent Python ML daemon...");
+    const pythonExe = getPythonExecutable();
+
+    this.process = spawn(pythonExe, [analyzePyPath, "daemon"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    this.rl = readline.createInterface({
+      input: this.process.stdout!,
+      terminal: false,
+    });
+
+    this.rl.on("line", (line) => {
+      try {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        const response = JSON.parse(trimmed);
+        const { requestId, prediction, error } = response;
+        if (response.type === "ready") {
+          this.modelLoaded = response.model_loaded === true;
+          this.modelVersion = typeof response.model_version === "string" ? response.model_version : null;
+          this.trainingManifest = response.training_manifest && typeof response.training_manifest === "object"
+            ? response.training_manifest as Record<string, unknown>
+            : null;
+          if (!this.modelLoaded) logger.error("Python inference backend started without a loadable model artifact");
+          for (const resolve of this.readinessWaiters) resolve(this.modelLoaded);
+          this.readinessWaiters.clear();
+          this.readinessPromise = null;
+          return;
+        }
+        if (!requestId) return;
+
+        const pending = this.pendingRequests.get(requestId);
+        if (pending) {
+          clearTimeout(pending.timeoutId);
+          this.pendingRequests.delete(requestId);
+          if (error) {
+            pending.reject(new Error(error));
+          } else {
+            const first = Array.isArray(prediction) ? prediction[0] : prediction;
+            if (typeof first?.model_version === "string") this.modelVersion = first.model_version;
+            pending.resolve(prediction);
+          }
+        }
+      } catch (err) {
+        logger.error({ err, line }, "Error parsing daemon stdout line");
+      }
+    });
+
+    this.process.stderr!.on("data", (data) => {
+      logger.error(`Python daemon stderr: ${data.toString()}`);
+    });
+
+    const exitHandler = (code: number | null) => {
+      logger.warn(`Python daemon exited with code ${code}`);
+      this.cleanup();
+      this.handleCrash();
+    };
+
+    const errorHandler = (err: Error) => {
+      logger.error({ err }, "Python daemon process error");
+      this.cleanup();
+      this.handleCrash();
+    };
+
+    this.process.on("close", exitHandler);
+    this.process.on("error", errorHandler);
+
+    this.daemonStatus = 'running';
+    this.modelLoaded = false;
+    this.daemonStartTime = Date.now();
+    this.restartAttempts = 0;
+    this.circuitBreakerFailures = 0;
+    this.circuitBreakerState = 'closed';
+    this.fallbackMode = false;
+  }
+
+  private cleanup() {
+    this.modelLoaded = false;
+    for (const resolve of this.readinessWaiters) resolve(false);
+    this.readinessWaiters.clear();
+    this.readinessPromise = null;
+    if (this.rl) {
+      this.rl.close();
+      this.rl = null;
+    }
+    if (this.process) {
+      try {
+        this.process.kill();
+      } catch (e) {}
+      this.process = null;
+    }
+  }
+
+  private handleCrash() {
+    if (this.isRestarting) return;
+    this.isRestarting = true;
+
+    this.daemonStatus = 'crashed';
+    this.lastCrashTime = Date.now();
+    this.restartAttempts++;
+
+    this.circuitBreakerFailures++;
+    if (this.circuitBreakerFailures >= this.circuitBreakerThreshold) {
+      this.circuitBreakerState = 'open';
+      this.lastFailureTime = Date.now();
+      logger.error("Circuit breaker OPEN — ML daemon restarts suspended");
+    }
+
+    // Reject all pending requests with a crash error
+    const activeRequests = Array.from(this.pendingRequests.entries());
+    this.pendingRequests.clear();
+    for (const [_, pending] of activeRequests) {
+      clearTimeout(pending.timeoutId);
+      pending.reject(new Error("Python daemon crashed."));
+    }
+
+    this.restartAttempts++;
+    if (this.restartAttempts > MAX_DAEMON_RESTART_ATTEMPTS) {
+      logger.error({ attempts: this.restartAttempts }, "Python daemon exceeded max restart attempts — giving up");
+      mlConcurrency.drain("ML daemon permanently unavailable. Retry later.");
+      return;
+    }
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s (capped)
+    const delayMs = Math.min(
+      this.baseDelayMs * Math.pow(2, this.restartAttempts - 1),
+      this.maxDelayMs
+    );
+
+    // Add jitter: ±25% random variation to prevent thundering herd
+    const jitter = delayMs * (0.75 + Math.random() * 0.5);
+    const actualDelay = Math.round(jitter);
+
+    logger.warn(
+      `Python daemon crashed (attempt ${this.restartAttempts}/${this.maxRestartAttempts}). ` +
+      `Restarting in ${Math.round(actualDelay / 1000)}s...`
+    );
+
+    setTimeout(() => {
+      this.isRestarting = false;
+      this.init();
+    }, actualDelay);
+  }
+
+  private isCircuitBreakerOpen(): boolean {
+    if (this.circuitBreakerState === 'open') {
+      if (Date.now() - this.lastFailureTime > this.circuitBreakerResetTimeoutMs) {
+        this.circuitBreakerState = 'half-open';
+        logger.info('Circuit breaker HALF-OPEN — allowing trial ML daemon start');
+        return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  public getStatus() {
+    return {
+      daemonStatus: this.daemonStatus,
+      modelVersion: this.modelVersion,
+      trainingManifest: this.trainingManifest,
+      modelLoaded: this.modelLoaded,
+      circuitBreakerState: this.circuitBreakerState,
+      restartAttempts: this.restartAttempts,
+      maxRestartAttempts: this.maxRestartAttempts,
+      fallbackMode: this.fallbackMode,
+      uptime: this.daemonStatus === 'running' && this.daemonStartTime > 0
+        ? Math.floor((Date.now() - this.daemonStartTime) / 1000)
+        : 0,
+      lastCrashTime: this.lastCrashTime ? new Date(this.lastCrashTime).toISOString() : null,
+      pendingRequests: this.pendingRequests.size,
+    };
+  }
+
+  public async checkReadiness(timeoutMs = 30000): Promise<boolean> {
+    if (this.modelLoaded) return true;
+    if (this.readinessPromise) return this.readinessPromise;
+    this.init();
+    if (!this.process) return false;
+    this.readinessPromise = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.readinessWaiters.delete(finish);
+        this.readinessPromise = null;
+        resolve(false);
+      }, timeoutMs);
+      const finish = (loaded: boolean) => {
+        clearTimeout(timer);
+        resolve(loaded);
+      };
+      this.readinessWaiters.add(finish);
+    });
+    return this.readinessPromise;
+  }
+
+  public async predict(input: unknown): Promise<PredictionResult> {
+    this.init();
+
+    if (!this.process || !this.process.stdin) {
+      throw new Error("Python daemon is not running.");
+    }
+
+    const requestId = randomUUID();
+
+    return new Promise<PredictionResult>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        if (this.pendingRequests.has(requestId)) {
+          this.pendingRequests.delete(requestId);
+          reject(new Error("Clinical assessment timed out."));
+        }
+      }, getRequestTimeout());
+
+      this.pendingRequests.set(requestId, { resolve: resolve as (value: PredictionResult | PredictionResult[]) => void, reject, timeoutId });
+
+      const payload = JSON.stringify({ requestId, input });
+      this.process!.stdin!.write(payload + "\n", (err) => {
+        if (err) {
+          clearTimeout(timeoutId);
+          this.pendingRequests.delete(requestId);
+          reject(err);
+        }
+      });
+    });
+  }
+
+  public async predictBatch(inputs: unknown[]): Promise<PredictionResult[]> {
+    this.init();
+
+    if (!this.process || !this.process.stdin) {
+      throw new Error("Python daemon is not running.");
+    }
+
+    const requestId = randomUUID();
+
+    return new Promise<PredictionResult[]>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        if (this.pendingRequests.has(requestId)) {
+          this.pendingRequests.delete(requestId);
+          reject(new Error("Clinical assessment timed out."));
+        }
+      }, getRequestTimeout());
+
+      this.pendingRequests.set(requestId, { resolve: resolve as (value: PredictionResult | PredictionResult[]) => void, reject, timeoutId });
+
+      const payload = JSON.stringify({ requestId, input: inputs });
+      this.process!.stdin!.write(payload + "\n", (err) => {
+        if (err) {
+          clearTimeout(timeoutId);
+          this.pendingRequests.delete(requestId);
+          reject(err);
+        }
+      });
+    });
+  }
+
+  public async extract(text: string): Promise<ClinicalAnalysisResult> {
+    this.init();
+
+    if (!this.process || !this.process.stdin) {
+      throw new Error("Python daemon is not running.");
+    }
+
+    const requestId = randomUUID();
+
+    return new Promise<ClinicalAnalysisResult>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        if (this.pendingRequests.has(requestId)) {
+          this.pendingRequests.delete(requestId);
+          reject(new Error("Clinical analysis timed out."));
+        }
+      }, getRequestTimeout());
+
+      this.pendingRequests.set(requestId, { resolve: resolve as any, reject, timeoutId });
+
+      const payload = JSON.stringify({ requestId, type: "extract", text });
+      this.process!.stdin!.write(payload + "\n", (err) => {
+        if (err) {
+          clearTimeout(timeoutId);
+          this.pendingRequests.delete(requestId);
+          reject(err);
+        }
+      });
+    });
+  }
+
+  public shutdown() {
+    this.cleanup();
+    this.pendingRequests.clear();
+  }
+}
+
+export const pythonDaemon = new PythonDaemonManager();
+
+process.on("exit", () => {
+  pythonDaemon.shutdown();
+});
+
+export interface InferenceOptions {
+  throwOnFailure?: boolean;
+}
+
+export interface ClinicalAnalysisResult {
+  symptoms: string[];
+  medications: string[];
+  model_name: string;
+}
+
+/**
+ * Optimized rule-based clinical fallback matcher for extracting symptoms and medications when Python is unavailable.
+ */
+export function clinicalAnalysisFallback(text: string): ClinicalAnalysisResult {
+  const symptoms = [
+    "polyuria", "polydipsia", "polyphagia", "weight loss", "fatigue", "blurred vision", 
+    "blurry vision", "numbness", "tingling", "slow healing sores", "frequent infections",
+    "cough", "fever", "pain", "dyspnea", "shortness of breath", "nausea", "vomiting", 
+    "headache", "dizziness", "weakness", "lethargy"
+  ];
+  const medications = [
+    "metformin", "insulin", "glipizide", "glyburide", "pioglitazone", 
+    "lisinopril", "atorvastatin", "amlodipine", "metoprolol", "aspirin", 
+    "albuterol", "gabapentin", "levothyroxine", "ibuprofen", "acetaminophen"
+  ];
+  
+  const textLower = text.toLowerCase();
+  const matchedSymptoms = symptoms.filter(s => new RegExp(`\\b${s}\\b`, 'i').test(textLower));
+  const matchedMedications = medications.filter(m => new RegExp(`\\b${m}\\b`, 'i').test(textLower));
+  
+  return {
+    symptoms: matchedSymptoms.sort(),
+    medications: matchedMedications.sort(),
+    model_name: "rule-based-fallback"
+  };
+}
+
+/**
+ * Runs clinical Note Analysis (entity extraction) through the Python daemon with fallback.
+ */
+export async function runClinicalAnalysis(
+  text: string,
+  options: InferenceOptions = {}
+): Promise<{ result: ClinicalAnalysisResult; isFallback: boolean }> {
+  const { throwOnFailure = false } = options;
+  const release = await mlConcurrency.acquire(getRequestTimeout());
+  let attempt = 0;
+
+  try {
+    while (true) {
+      attempt++;
+      try {
+        const result = await pythonDaemon.extract(text);
+        return { result, isFallback: false };
+      } catch (error: any) {
+        const isTimeout = error.message?.includes("timed out") || error.message?.includes("Timeout");
+        const isConnection =
+          error.message?.includes("connection") ||
+          error.message?.includes("ECONNREFUSED") ||
+          error.message?.includes("not running") ||
+          error.message?.includes("crashed");
+
+        const shouldRetry = isTimeout || isConnection;
+        const maxRetries = getMaxRetries();
+        const backoffFactor = getRetryBackoffFactor();
+
+        if (shouldRetry && attempt <= maxRetries) {
+          const delay = 1000 * Math.pow(backoffFactor, attempt - 1);
+          logger.info(
+            { attempt, maxRetries, delay, err: error.message },
+            `Retrying clinical analysis (attempt ${attempt}/${maxRetries}) after ${delay}ms`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        throw error;
+      }
+    }
+  } catch (error: any) {
+    if (throwOnFailure) {
+      throw error;
+    }
+    logger.warn({ err: error }, "Clinical analysis failed, using clinical fallback");
+    return { result: clinicalAnalysisFallback(text), isFallback: true };
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Runs a single clinical assessment inference through the Python daemon with semaphore limits, falling back to rule-based analysis on failure.
+ * @param input - The input parameter.
+ * @param documentId - Optional document ID for structured logging.
+ * @param options - Optional inference execution options.
+ * @returns The result of the operation.
+ */
+export async function runAssessmentInference(
+  input: unknown,
+  documentId?: string | number,
+  options: InferenceOptions = {}
+): Promise<{ prediction: PredictionResult; isFallback: boolean }> {
+  const { throwOnFailure = false } = options;
+  if (ruleBasedModeEnabled()) {
+    if (throwOnFailure) {
+      throw Object.assign(new Error("Rule-based inference is not allowed for strict ML inference."), { statusCode: 503 });
+    }
+    return { prediction: calculateClinicalFallback(input) as PredictionResult, isFallback: true };
+  }
+  const release = await mlConcurrency.acquire(getRequestTimeout());
+  const docId = documentId ?? (input as any)?.id ?? "unknown";
+  let attempt = 0;
+
+  try {
+    while (true) {
+      attempt++;
+      try {
+        const prediction = await pythonDaemon.predict(input);
+        delete prediction.modelConfidence;
+        delete prediction.confidenceInterval;
+        prediction.prediction_method = "ml_model";
+        prediction.fallback_used = false;
+        prediction.model_version = prediction.model_version || process.env.MODEL_VERSION || null;
+        return { prediction, isFallback: false };
+      } catch (error: any) {
+        const isTimeout = error.message?.includes("timed out") || error.message?.includes("Timeout");
+        const isRateLimit = error.message?.includes("429") || error.message?.toLowerCase().includes("rate limit");
+        const isConnection =
+          error.message?.includes("connection") ||
+          error.message?.includes("ECONNREFUSED") ||
+          error.message?.includes("not running") ||
+          error.message?.includes("crashed");
+
+        if (isTimeout) {
+          logger.warn(`WARN: API timeout on Document ID ${docId}`);
+        }
+
+        const shouldRetry = isTimeout || isRateLimit || isConnection;
+        const maxRetries = getMaxRetries();
+        const backoffFactor = getRetryBackoffFactor();
+
+        if (shouldRetry && attempt <= maxRetries) {
+          const delay = 1000 * Math.pow(backoffFactor, attempt - 1);
+          logger.info(
+            { attempt, maxRetries, delay, documentId: docId, err: error.message },
+            `Retrying ML inference for Document ID ${docId} (attempt ${attempt}/${maxRetries}) after ${delay}ms`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        logger.error(`ERROR: Failed after ${attempt - 1} retries on Document ID ${docId}`);
+        throw error;
+      }
+    }
+  } catch (error: any) {
+    const isTimeout = error.message?.includes("timed out") || error.message?.includes("Timeout");
+    if (isTimeout) {
+      throw new Error("Clinical assessment timed out.");
+    }
+    if (throwOnFailure) {
+      logger.error({ err: error }, "ML inference failed in strict inference mode");
+      throw Object.assign(new Error("ML inference service is unavailable. Please retry shortly."), { statusCode: 503 });
+    }
+    if (ruleBasedModeEnabled()) {
+      logger.warn({ err: error }, "ML inference unavailable; explicit rule-based mode is active");
+      return { prediction: calculateClinicalFallback(input) as PredictionResult, isFallback: true };
+    }
+    logger.error({ err: error }, "ML inference unavailable; no prediction returned");
+    throw Object.assign(new Error("ML inference service is unavailable. Please retry shortly."), { statusCode: 503 });
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Performs batch clinical assessment inference through the Python daemon with parallel resolution and fallback failover.
+ * @param inputs - The inputs parameter.
+ * @param documentId - Optional document ID for structured logging.
+ * @param options - Optional inference execution options.
+ * @returns The result of the operation.
+ */
+export async function runAssessmentInferenceBatch(
+  inputs: unknown[],
+  documentId?: string | number,
+  options: InferenceOptions = {}
+): Promise<{ predictions: PredictionResult[]; isFallback: boolean }> {
+  const { throwOnFailure = false } = options;
+  if (ruleBasedModeEnabled()) {
+    if (throwOnFailure) {
+      throw Object.assign(new Error("Rule-based inference is not allowed for strict ML inference."), { statusCode: 503 });
+    }
+    return { predictions: inputs.map(input => calculateClinicalFallback(input)) as PredictionResult[], isFallback: true };
+  }
+  const release = await mlConcurrency.acquire(getRequestTimeout());
+  const docId = documentId ?? "batch";
+  let attempt = 0;
+
+  try {
+    while (true) {
+      attempt++;
+      try {
+        const predictions = await pythonDaemon.predictBatch(inputs);
+        predictions.forEach((prediction) => {
+          delete prediction.modelConfidence;
+          delete prediction.confidenceInterval;
+          prediction.prediction_method = "ml_model";
+          prediction.fallback_used = false;
+          prediction.model_version = prediction.model_version || process.env.MODEL_VERSION || null;
+        });
+        return { predictions, isFallback: false };
+      } catch (error: any) {
+        const isTimeout = error.message?.includes("timed out") || error.message?.includes("Timeout");
+        const isRateLimit = error.message?.includes("429") || error.message?.toLowerCase().includes("rate limit");
+        const isConnection =
+          error.message?.includes("connection") ||
+          error.message?.includes("ECONNREFUSED") ||
+          error.message?.includes("not running") ||
+          error.message?.includes("crashed");
+
+        if (isTimeout) {
+          logger.warn(`WARN: API timeout on Document ID ${docId}`);
+        }
+
+        const shouldRetry = isTimeout || isRateLimit || isConnection;
+        const maxRetries = getMaxRetries();
+        const backoffFactor = getRetryBackoffFactor();
+
+        if (shouldRetry && attempt <= maxRetries) {
+          const delay = 1000 * Math.pow(backoffFactor, attempt - 1);
+          logger.info(
+            { attempt, maxRetries, delay, documentId: docId, err: error.message },
+            `Retrying ML batch inference for Document ID ${docId} (attempt ${attempt}/${maxRetries}) after ${delay}ms`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        logger.error(`ERROR: Failed after ${attempt - 1} retries on Document ID ${docId}`);
+        throw error;
+      }
+    }
+  } catch (error: any) {
+    const isTimeout = error.message?.includes("timed out") || error.message?.includes("Timeout");
+    if (isTimeout) {
+      throw new Error("Clinical assessment timed out.");
+    }
+    if (throwOnFailure) {
+      logger.error({ err: error }, "ML batch inference failed in strict inference mode");
+      throw Object.assign(new Error("ML inference service is unavailable. Please retry shortly."), { statusCode: 503 });
+    }
+    if (ruleBasedModeEnabled()) {
+      logger.warn({ err: error }, "ML batch inference unavailable; explicit rule-based mode is active");
+      const predictions = inputs.map(input => calculateClinicalFallback(input)) as PredictionResult[];
+      return { predictions, isFallback: true };
+    }
+    logger.error({ err: error }, "ML batch inference unavailable; no predictions returned");
+    throw Object.assign(new Error("ML inference service is unavailable. Please retry shortly."), { statusCode: 503 });
+  } finally {
+    release();
+  }
+}
+
+/** Namespace exporting ML inference operations and utilities. */
+export const MLService = {
+  activeInferenceRequests,
+  generateRequestFingerprint,
+  runAssessmentInference,
+  runAssessmentInferenceBatch,
+  runClinicalAnalysis,
+};
