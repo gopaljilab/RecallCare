@@ -59,7 +59,7 @@
     "@vectorize-io/hindsight-client": "^1.2.0",
     "abortcontroller-polyfill": "^1.5.0",
     "bcrypt": "^6.0.0",
-    "bullmq": "^5.78.0",
+    "bullmq": "^6.6.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
