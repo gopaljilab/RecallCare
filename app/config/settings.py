@@ -1,5 +1,5 @@
 """
-Configuration settings for the Clinical Insight Engine Python pipeline.
+Configuration settings for the RecallCare Python pipeline (built on Clinical Insight Engine).
 """
 import os
 

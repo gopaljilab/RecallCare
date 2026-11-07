@@ -62,7 +62,7 @@ class ReportScheduler {
       
       const emailHtml = `
         <div style="font-family: sans-serif; max-w: 600px; margin: 0 auto; color: #333;">
-          <h2 style="color: #2563eb;">Clinical Insight Engine - ${frequency.charAt(0).toUpperCase() + frequency.slice(1)} Summary</h2>
+          <h2 style="color: #2563eb;">RecallCare - ${frequency.charAt(0).toUpperCase() + frequency.slice(1)} Summary</h2>
           <p>Here is the high-level patient cohort statistics for the ${timeframeStr.toLowerCase()}:</p>
           
           <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
@@ -79,12 +79,12 @@ class ReportScheduler {
           
           <p style="font-size: 12px; color: #6b7280; margin-top: 30px;">
             You are receiving this email because your report frequency is set to ${frequency}.
-            To change this, visit the Settings panel in the Clinical Insight Engine dashboard.
+            To change this, visit the Settings panel in the RecallCare dashboard.
           </p>
         </div>
       `;
 
-      const emailSubject = `[Clinical Insight Engine] ${frequency.charAt(0).toUpperCase() + frequency.slice(1)} Summary Report`;
+      const emailSubject = `[RecallCare] ${frequency.charAt(0).toUpperCase() + frequency.slice(1)} Summary Report`;
 
       // 4. Send the emails
       for (const user of subscribedUsers) {

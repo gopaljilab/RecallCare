@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **Clinical Insight Engine** will be documented in this file.
+All notable changes to **RecallCare** (built on Clinical Insight Engine) will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
@@ -73,7 +73,7 @@ _No unreleased security updates._
 - StandardScaler normalisation for numeric inputs
 - Synthetic data generation fallback (`create_synthetic_data()`) when dataset is unavailable
 - Single-patient prediction via `patient.json` file interface (`analyze.py predict_file`)
-- Note: `main.py` is a Replit workspace stub and is not part of the ML pipeline
+- Note: `main.py` is an entry stub and is not part of the ML pipeline
 
 #### Security
 - `helmet` middleware for HTTP security headers on all API responses
@@ -157,8 +157,8 @@ This project follows **Semantic Versioning**.
 
 ## Links
 
-- Repository: [github.com/gopaljilab/Clinical-Insight-Engine](https://github.com/gopaljilab/Clinical-Insight-Engine)
-- Issues: [github.com/gopaljilab/Clinical-Insight-Engine/issues](https://github.com/gopaljilab/Clinical-Insight-Engine/issues)
+- Repository: [github.com/Clinical-Insight-Engine](https://github.com/Clinical-Insight-Engine)
+- Issues: [github.com/Clinical-Insight-Engine/issues](https://github.com/Clinical-Insight-Engine/issues)
 
-[Unreleased]: https://github.com/gopaljilab/Clinical-Insight-Engine/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/gopaljilab/Clinical-Insight-Engine/releases/tag/v1.0.0
+[Unreleased]: https://github.com/Clinical-Insight-Engine/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Clinical-Insight-Engine/releases/tag/v1.0.0

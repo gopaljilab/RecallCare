@@ -80,7 +80,7 @@ The code includes:
 
 - **No medical diagnosis claims**: All outputs framed as "decision support"
 - **Interpretability prioritized**: Logistic regression chosen over complex models
-- **Replit compatible**: Uses only standard Python libraries
+- **Standard runtime**: Uses only standard Python libraries
 - **Standard libraries only**: pandas, numpy, scikit-learn, matplotlib
 
 ## Usage

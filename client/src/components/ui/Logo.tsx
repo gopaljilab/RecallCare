@@ -38,10 +38,10 @@ export function Logo({ variant = "full", theme = "auto", size = "md", className 
   if (variant === "text") return (
     <div className={cn("flex flex-col", className)}>
       <span className={cn("font-bold leading-tight", s.text, textColor)}>
-        Clinical Insight Engine
+        RecallCare
       </span>
-      <span className={cn("leading-tight", s.tagline, subColor)}>
-        AI-Powered Preventive Care
+      <span className={cn("leading-tight text-xs", subColor)}>
+        The clinical assistant that remembers every patient visit.
       </span>
     </div>
   );
@@ -51,10 +51,10 @@ export function Logo({ variant = "full", theme = "auto", size = "md", className 
       <Icon />
       <div className="flex flex-col">
         <span className={cn("font-bold leading-tight", s.text, textColor)}>
-          Clinical Insight Engine
+          RecallCare
         </span>
-        <span className={cn("leading-tight", s.tagline, subColor)}>
-          AI-Powered Preventive Care
+        <span className={cn("leading-tight text-xs", subColor)}>
+          The clinical assistant that remembers every patient visit.
         </span>
       </div>
     </div>

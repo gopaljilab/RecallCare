@@ -16,7 +16,7 @@ export default function ResetPassword() {
   const token = hashToken || queryToken;
 
   useEffect(() => {
-    document.title = "Reset Password - Clinical Insight Engine";
+    document.title = "Reset Password - RecallCare";
     if (!token) {
       setError("Invalid or missing reset token.");
       return;
@@ -129,7 +129,7 @@ export default function ResetPassword() {
         </div>
 
         <p className="text-center text-xs text-gray-400 dark:text-gray-600 mt-6">
-          Clinical Insight Engine © {new Date().getFullYear()}
+          RecallCare © {new Date().getFullYear()}
         </p>
       </div>
     </div>

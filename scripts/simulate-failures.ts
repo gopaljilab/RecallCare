@@ -97,7 +97,7 @@ async function runFailureSimulations() {
     console.log("SIMULATION 1: Invalid Groq API Key");
     console.log("Testing rejection of invalid key and fallback to rules engine");
     {
-      (llmService as any).apiKey = "gsk_invalid_test_key";
+      (llmService as any).apiKey = "sim_invalid_test_key";
       (llmService as any).client = {
         chat: {
           completions: {
@@ -133,7 +133,7 @@ async function runFailureSimulations() {
     console.log("SIMULATION 2: Malformed Tool-Call JSON Arguments");
     console.log("Testing that corrective prompt retry occurs and recovers model");
     {
-      (llmService as any).apiKey = "gsk_valid_simulated_key";
+      (llmService as any).apiKey = "sim_valid_simulated_key";
       let turn = 0;
       let correctiveMessageReceived = false;
 
@@ -212,7 +212,7 @@ async function runFailureSimulations() {
     console.log("SIMULATION 3: 429 Rate Limit (Too Many Requests)");
     console.log("Testing 3 attempts per model, escalation to fallback model, then rules engine");
     {
-      (llmService as any).apiKey = "gsk_valid_simulated_key";
+      (llmService as any).apiKey = "sim_valid_simulated_key";
       const callLog: Array<{ model: string; timestamp: number }> = [];
 
       (llmService as any).client = {
@@ -259,7 +259,7 @@ async function runFailureSimulations() {
     console.log("SIMULATION 4: Service Timeout");
     console.log("Testing timeout handling across models and safe fallback");
     {
-      (llmService as any).apiKey = "gsk_valid_simulated_key";
+      (llmService as any).apiKey = "sim_valid_simulated_key";
       let timeoutCalls = 0;
 
       (llmService as any).client = {
@@ -295,7 +295,7 @@ async function runFailureSimulations() {
     console.log("SIMULATION 5: Hindsight Service Unreachable / Connection Refused");
     console.log("Testing graceful degradation when persistent memory server is down");
     {
-      (llmService as any).apiKey = "gsk_valid_simulated_key";
+      (llmService as any).apiKey = "sim_valid_simulated_key";
       (llmService as any).client = {
         chat: {
           completions: {

@@ -5,7 +5,7 @@ import { useEffect } from "react";
 
 export default function PrivacyPolicy() {
   useEffect(() => {
-    document.title = "Privacy Policy | Clinical Insight Engine";
+    document.title = "Privacy Policy | RecallCare";
   }, []);
 
   return (
@@ -16,7 +16,7 @@ export default function PrivacyPolicy() {
             <ShieldCheck className="h-6 w-6" aria-hidden="true" />
           </div>
           <div>
-            <p className="text-lg font-black tracking-tight text-[#1E293B] dark:text-gray-100">Clinical Insight</p>
+            <p className="text-lg font-black tracking-tight text-[#1E293B] dark:text-gray-100">RecallCare</p>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Clinical AI</p>
           </div>
         </div>
@@ -28,14 +28,14 @@ export default function PrivacyPolicy() {
           <section>
             <h2 className="text-xl font-black text-[#1E293B] dark:text-gray-100">1. Overview</h2>
             <p className="mt-3">
-              Clinical Insight is a clinical decision support demo tool. This privacy policy describes how data entered into the application is handled during a session.
+              RecallCare is a clinical decision support application equipped with persistent longitudinal memory. This privacy policy describes how data entered into the application is handled.
             </p>
           </section>
 
           <section>
             <h2 className="text-xl font-black text-[#1E293B] dark:text-gray-100">2. Data Collection</h2>
             <p className="mt-3">
-              Clinical Insight collects clinical inputs (age, BMI, HbA1c, blood glucose, smoking history, and related vitals) solely to generate risk assessments. No data is shared with third parties.
+              RecallCare collects clinical inputs (age, BMI, HbA1c, blood glucose, smoking history, notes, and outcome feedback) to generate longitudinal risk assessments.
             </p>
           </section>
 

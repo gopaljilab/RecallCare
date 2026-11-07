@@ -13,7 +13,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    document.title = "Clinical Insight Engine - Settings";
+    document.title = "RecallCare - Settings";
     
     // Fetch current settings
     ApiClient.get("/api/settings")

@@ -32,8 +32,7 @@
     "node_modules/",
     "docs/",
     "*.config.js",
-    "*.config.ts",
-    "docs/typedoc/"
+    "*.config.ts"
   ],
   "rules": {
     "react/react-in-jsx-scope": "off",

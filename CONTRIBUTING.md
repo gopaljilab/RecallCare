@@ -1,6 +1,6 @@
-# Contributing to Clinical Insight Engine
+# Contributing to RecallCare
 
-Thank you for helping improve Clinical Insight Engine. This project combines a React/TypeScript frontend, an Express API, PostgreSQL persistence, and a Python machine learning inference script, so focused and well-tested changes are especially helpful.
+Thank you for helping improve RecallCare (built on Clinical Insight Engine). This project combines a React/TypeScript frontend, an Express API, PostgreSQL persistence, and a Python machine learning inference script, so focused and well-tested changes are especially helpful.
 
 ## Before You Start
 

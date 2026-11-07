@@ -3,7 +3,7 @@
 # Exit on error
 set -e
 
-echo "🩺 Setting up Clinical Insight Engine..."
+echo "🩺 Setting up RecallCare..."
 
 # 1. Setup environment file
 if [ ! -f .env ]; then
@@ -20,10 +20,10 @@ if [ ! -d .git ]; then
   git init
   git checkout -b main || git checkout -b master
   git add .
-  git commit -m "Initial commit of Clinical Insight Engine"
+  git commit -m "Initial commit of RecallCare"
   
   echo "🔗 Adding GitHub remote origin..."
-  git remote add origin https://github.com/gopaljilab/Clinical-Insight-Engine.git
+  git remote add origin https://github.com/gopaljilab/RecallCare.git
   
   echo "✅ Git repository initialized."
 else
@@ -31,7 +31,7 @@ else
   # Check if remote exists, if not add it
   if ! git remote | grep -q "origin"; then
     echo "🔗 Adding GitHub remote origin..."
-    git remote add origin https://github.com/gopaljilab/Clinical-Insight-Engine.git
+    git remote add origin https://github.com/gopaljilab/RecallCare.git
   fi
 fi
 

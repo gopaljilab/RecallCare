@@ -1,5 +1,5 @@
 /**
- * Email service for the Clinical Insight Engine using Resend.
+ * Email service for RecallCare using Resend.
  *
  * Development: prints OTP to the server console and uses mock sending.
  * Production: sends via Resend API.
@@ -111,11 +111,11 @@ export async function sendVerificationEmail(
 
   return sendEmail({
     to: email,
-    subject: "Your Clinical Insight Engine Verification Code",
+    subject: "Your RecallCare Verification Code",
     text: `Your verification code is: ${code}\n\nThis code expires in 10 minutes.\n\nIf you did not request this code, please ignore this email.`,
     html: `
       <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
-        <h2 style="color: #2563EB;">Clinical Insight Engine</h2>
+        <h2 style="color: #2563EB;">RecallCare</h2>
         <p>Your verification code is:</p>
         <div style="font-size: 32px; font-weight: 900; letter-spacing: 8px; text-align: center;
                     padding: 16px; background: #F0F5FF; border-radius: 12px; color: #1E293B; margin: 24px 0;">
@@ -148,11 +148,11 @@ export async function sendPasswordResetEmail(
 
   return sendEmail({
     to: email,
-    subject: "Reset Your Clinical Insight Engine Password",
+    subject: "Reset Your RecallCare Password",
     text: `You requested a password reset.\n\nClick the link below to reset your password:\n${resetLink}\n\nThis link expires in 1 hour.\n\nIf you did not request this, please ignore this email.`,
     html: `
       <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
-        <h2 style="color: #2563EB;">Clinical Insight Engine</h2>
+        <h2 style="color: #2563EB;">RecallCare</h2>
         <p>You requested a password reset. Click the button below to choose a new password:</p>
         <p style="text-align: center; margin: 24px 0;">
           <a href="${resetLink}" style="background: #2563EB; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 700;">
@@ -179,7 +179,7 @@ export async function sendCriticalRiskAlert(
 ): Promise<boolean> {
   const formattedScore = riskScore.toFixed(1);
   const subject = `CRITICAL ALERT: Critical Diabetes Risk Score Detected for ${patientName}`;
-  const text = `Dear Clinician,\n\nA new clinical assessment has calculated a critical risk score of ${formattedScore}% for patient: ${patientName}.\n\nPlease review the patient's record (Assessment ID: ${assessmentId}) immediately.\n\nBest regards,\nClinical Insight Engine`;
+  const text = `Dear Clinician,\n\nA new clinical assessment has calculated a critical risk score of ${formattedScore}% for patient: ${patientName}.\n\nPlease review the patient's record (Assessment ID: ${assessmentId}) immediately.\n\nBest regards,\nRecallCare`;
   const html = `
     <div style="font-family: sans-serif; max-width: 520px; margin: 0 auto; border: 1px solid #FECACA; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
       <div style="background-color: #EF4444; color: white; padding: 20px; text-align: center;">
@@ -214,7 +214,7 @@ export async function sendCriticalRiskAlert(
         </p>
       </div>
       <div style="background: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 14px 24px; text-align: center; font-size: 11px; color: #64748B;">
-        This is an automated alert system from Clinical Insight Engine.
+        This is an automated alert system from RecallCare.
       </div>
     </div>
   `;

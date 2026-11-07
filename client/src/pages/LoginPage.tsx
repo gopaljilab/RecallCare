@@ -4,7 +4,7 @@ import { AuthFlow } from "@/components/auth/AuthFlow";
 
 export default function LoginPage() {
   useEffect(() => {
-    document.title = "Clinical Insight Engine - Authentication";
+    document.title = "RecallCare - Authentication";
   }, []);
 
   // Use URL params to determine initial mode if desired

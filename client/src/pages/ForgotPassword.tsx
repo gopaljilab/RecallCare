@@ -17,7 +17,7 @@ export default function ForgotPassword() {
   const [, setLocation] = useLocation();
 
   useEffect(() => {
-    document.title = "Forgot Password - Clinical Insight Engine";
+    document.title = "Forgot Password - RecallCare";
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {

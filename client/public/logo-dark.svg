@@ -6,8 +6,8 @@
   <rect x="36" y="20" width="3" height="8" fill="#06B6D4" rx="1" opacity="0.9"/>
   <rect x="40" y="17" width="3" height="11" fill="#3B82F6" rx="1" opacity="0.9"/>
   <rect x="44" y="22" width="3" height="6" fill="#10B981" rx="1" opacity="0.9"/>
-  <text x="58" y="20" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="700" font-size="13" fill="#F8FAFC">Clinical Insight</text>
-  <text x="58" y="36" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="400" font-size="11" fill="#94A3B8">Engine</text>
+  <text x="58" y="22" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="700" font-size="14" fill="#F8FAFC">RecallCare</text>
+  <text x="58" y="36" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="400" font-size="9" fill="#94A3B8">Persistent Memory</text>
   <rect x="185" y="10" width="22" height="13" rx="3" fill="#3B82F6"/>
   <text x="196" y="20.5" font-family="'Plus Jakarta Sans', Inter, sans-serif" font-weight="700" font-size="8.5" fill="white" text-anchor="middle">AI</text>
 </svg>

@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for Clinical Insight Engine
+# Multi-stage Dockerfile for RecallCare
 
 # Stage 1: Build Node.js application
 FROM node:22-bookworm-slim AS builder

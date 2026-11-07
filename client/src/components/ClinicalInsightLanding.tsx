@@ -70,8 +70,8 @@ const footerLinks = [
 ];
 
 const socialLinks = [
-  { href: "https://www.linkedin.com/in/guptagopal001/", icon: Linkedin, label: "LinkedIn" },
-  { href: "https://github.com/gopaljilab/Clinical-Insight-Engine", icon: Github, label: "GitHub" },
+  { href: "#", icon: Linkedin, label: "LinkedIn" },
+  { href: "#", icon: Github, label: "GitHub" },
   { href: "mailto:hello@cardioguard.ai", icon: Mail, label: "Email" },
 ];
 
@@ -557,7 +557,7 @@ export function ClinicalInsightLanding() {
           <div>
             <BrandMark />
             <p className="mt-4 max-w-md text-sm leading-6 text-slate-500">
-              Copyright {new Date().getFullYear()} Clinical Insight. Built for clinical decision support, not diagnosis.
+              Copyright {new Date().getFullYear()} RecallCare. Built for clinical decision support, not diagnosis.
             </p>
           </div>
 

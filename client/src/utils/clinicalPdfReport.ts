@@ -503,8 +503,8 @@ export function downloadClinicalAssessmentPdf(assessment: ReportAssessment) {
 
   const explanation = assessment.explanation;
 
-  pdf.text("Clinical Insight Engine", MARGIN, { size: 10, font: "bold", color: ACCENT });
-  pdf.text("AI-Powered Preventive Care", MARGIN, { size: 8, color: MUTED });
+  pdf.text("RecallCare", MARGIN, { size: 10, font: "bold", color: ACCENT });
+  pdf.text("The clinical assistant that remembers every patient visit.", MARGIN, { size: 8, color: MUTED });
   pdf.moveDown(6);
   pdf.text("EHR Clinical Assessment Report", MARGIN, { size: 21, font: "bold", color: SLATE });
   pdf.moveDown(4);
@@ -520,7 +520,7 @@ export function downloadClinicalAssessmentPdf(assessment: ReportAssessment) {
     ["Patient Name", formatValue(assessment.patientName)],
     ["Assessment Date", formatDate(assessment.createdAt)],
     ["Patient ID / Visit ID", `V-${assessment.id ?? "N/A"}`],
-    ["Provider Organization", "Clinical Insight Engine"],
+    ["Provider Organization", "RecallCare"],
   ]);
 
   pdf.setDrawColor(220, 226, 232);

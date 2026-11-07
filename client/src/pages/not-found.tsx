@@ -6,7 +6,7 @@ import { useEffect } from "react";
 
 export default function NotFound() {
   useEffect(() => {
-    document.title = "Page Not Found | Clinical Insight Engine";
+    document.title = "Page Not Found | RecallCare";
   }, []);
 
   return (

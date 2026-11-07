@@ -1,50 +1,43 @@
 <p align="center">
-  <img src="./clinical_insight_banner.png" alt="Clinical Insight Engine Banner" width="100%" />
+  <img src="./recallcare_banner.svg" alt="RecallCare Banner" width="100%" />
 </p>
 
 <div align="center">
 
-# 🩺 Clinical Insight Engine 
+# 🩺 RecallCare
 
-### Clinical Decision Support for Preventive Diabetes Risk Assessment
+### The clinical assistant that remembers every patient visit.
 
-> *Interpretable ML + Modern React — built for clinicians and patients alike*
+> *RecallCare extends my earlier project [Clinical Insight Engine](https://github.com/gopaljilab/Clinical-Insight-Engine) (MIT license).*
 
 <p align="center">
-  
+  <img src="https://img.shields.io/badge/RecallCare-v1.0.0-3b82f6?style=flat-square" alt="RecallCare" />
+  <img src="https://img.shields.io/badge/Hindsight-Persistent%20Memory-0ea5e9?style=flat-square" alt="Hindsight" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/TypeScript-5+-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/React-18+-61DAFB?style=flat-square&logo=react&logoColor=white" alt="React" />
   <img src="https://img.shields.io/badge/Express.js-4+-000000?style=flat-square&logo=express&logoColor=white" alt="Express" />
   <img src="https://img.shields.io/badge/PostgreSQL-14+-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
   <img src="https://img.shields.io/badge/scikit--learn-1.8+-F7931E?style=flat-square&logo=scikitlearn&logoColor=white" alt="scikit-learn" />
-  <img src="https://img.shields.io/badge/GSSoC-2026-orange?style=flat-square" alt="GSSoC" />
-</p>
-
-<p align="center">
-  
-  ![Stars](https://img.shields.io/github/stars/gopaljilab/Clinical-Insight-Engine?style=social)
-  ![Forks](https://img.shields.io/github/forks/gopaljilab/Clinical-Insight-Engine?style=social)
-  ![Issues](https://img.shields.io/github/issues/gopaljilab/Clinical-Insight-Engine?style=social)
-  ![Contributors](https://img.shields.io/github/contributors/gopaljilab/Clinical-Insight-Engine?style=social)
-
 </p>
 
 </div>
 
 <p align="center">
-  A full-stack clinical decision support system that surfaces <strong>early diabetes risk signals</strong> from routine patient data.<br />
-  Combines an <strong>interpretable ML model</strong> with a <strong>modern React frontend</strong>, presenting results tailored for both <strong>clinicians</strong> and <strong>patients</strong>.
+  <strong>RecallCare</strong> is a full-stack clinical decision support system with persistent longitudinal memory that surfaces <strong>early diabetes risk signals</strong> and <strong>remembers patient encounters, therapeutic responses, and clinician feedback across visits</strong>.<br />
+  Combines an <strong>interpretable ML model</strong>, <strong>Hindsight persistent memory</strong>, and a <strong>modern React frontend</strong>, presenting results tailored for both <strong>clinicians</strong> and <strong>patients</strong>.
 </p>
 
 > [!WARNING]
-> **Medical Disclaimer** — This system is intended for **educational and research purposes only**. It does **not** provide medical diagnoses and should not be used as a substitute for professional medical advice.
+> **Medical Disclaimer** — This system is intended for **educational and research purposes only**. It does **not** provide medical diagnoses and should not be used as a substitute for professional medical advice. Suggestions only. The clinician makes the final decision.
 
 ---
 
 ## 📑 Table of Contents
 
-- [Why Clinical Insight Engine?](#-why-clinical-insight-engine)
+- [Why RecallCare?](#-why-recallcare)
+- [What We Built on Top of Clinical Insight Engine](#-what-we-built-on-top-of-clinical-insight-engine)
+- [How Hindsight Memory is Used](#-how-hindsight-memory-is-used)
 - [Key Features](#-key-features)
 - [Architecture](#-architecture)
 - [Tech Stack](#-tech-stack)
@@ -64,13 +57,12 @@
 - [Troubleshooting](#-troubleshooting)
 - [Roadmap](#-roadmap)
 - [Contributing](#-contributing)
-- [Contributors](#-contributors)
 
 ---
 
-## 💡 Why Clinical Insight Engine?
+## 💡 Why RecallCare?
 
-Diabetes affects over **500 million** adults worldwide, yet early risk signals are often buried in routine clinical data. Clinical Insight Engine bridges that gap:
+Diabetes affects over **500 million** adults worldwide, yet early risk signals are often buried in routine clinical data. RecallCare bridges that gap:
 
 | Problem | Our Approach |
 |---|---|
@@ -78,6 +70,68 @@ Diabetes affects over **500 million** adults worldwide, yet early risk signals a
 | Results are one-size-fits-all | **Dual-view** output — detailed for clinicians, simplified for patients |
 | Predictions lack context | **Confidence-aware** assessments with actionable follow-up recommendations |
 | Patient data sits in silos | **Longitudinal tracking** with full assessment history |
+
+---
+
+## 🧠 What We Built on Top of Clinical Insight Engine
+
+While the original Clinical Insight Engine provided point-in-time risk predictions using a logistic regression model, clinical care is fundamentally longitudinal. A single visit cannot reveal whether an elevated HbA1c represents worsening glycemic control, a transient elevation, or an improving trend under newly initiated therapy.
+
+We added an **autonomous, persistent-memory AI agent layer** on top of the clinical engine:
+
+1. **Persistent Longitudinal Memory (`@vectorize-io/hindsight-client`)**:
+   - Integrates Hindsight (Cloud and self-hosted) as an external episodic and semantic memory bank.
+   - Retains structured clinical encounters, biometric trends, clinician notes, and therapeutic decisions across multiple patient visits.
+   - Recalls relevant historical context on demand to transform static assessments into longitudinal clinical narratives.
+
+2. **Dual-Mode Comparative Evaluation (Memory OFF vs. Memory ON)**:
+   - Clinicians can toggle between stateless analysis (**Memory OFF**) and memory-augmented analysis (**Memory ON**) directly within the assessment interface.
+   - **Memory OFF** provides a strict baseline: calls the LLM with only the current visit metrics (no historical context).
+   - **Memory ON** synthesizes the full multi-visit trajectory, tracking medication tolerance, glycemic trajectory, and prior interventions.
+
+3. **Closed-Loop Clinician Feedback & Learning (`agent_outcomes`)**:
+   - Clinicians can submit structured feedback on generated insights (helpful/unhelpful ratings, interventions selected, and free-text outcome notes).
+   - Outcomes are saved to PostgreSQL (`agent_outcomes` table) and retained to Hindsight with patient-specific tags.
+   - Future encounters dynamically recall past clinician decisions and recorded patient responses, creating a closed-loop learning system.
+
+4. **Multi-Tier Fault Tolerance & Safe Clinical Guardrails**:
+   - Primary LLM: Groq `openai/gpt-oss-120b` via OpenAI-compatible endpoint.
+   - Secondary Fallback: Automatic rollover to `llama-3.3-70b-versatile` if rate limits, timeouts, or unparseable JSON occur.
+   - Tertiary Safety Engine: Deterministic rule-based clinical engine if all external services are unreachable.
+   - Zero hardcoded drug dosages: all therapeutic guidance adheres strictly to neutral clinical framing (e.g., *"consider reviewing adherence and treatment options with the clinician"*).
+   - Every insight displays an explicit medical disclaimer: *"Suggestions only. The clinician makes the final decision."*
+
+5. **Patient Identifier & Database Migration**:
+   - Added an optional `patient_id` (MRN) to the assessment schema, queue processing pipeline, and frontend form.
+   - Formally migrated using Drizzle Kit (`migrations/0008_powerful_rattler.sql`).
+   - Graceful UI fallback: assessments submitted without a patient ID display a friendly informational banner explaining that longitudinal memory requires a patient identifier.
+
+---
+
+## ⚡ How Hindsight Memory is Used
+
+The memory architecture utilizes Hindsight's vector and semantic recall capabilities with strict clinical safety constraints:
+
+- **Strict Patient Isolation**:
+  - Every retain operation tags records with `["patient", patientId]`.
+  - Recalls are explicitly scoped to the specific `patientId`, guaranteeing zero cross-patient data contamination.
+
+- **Deterministic Document IDs**:
+  - Retain operations generate deterministic keys (`patient-${patientId}-visit-${visitNumber}-assessment`, `patient-${patientId}-note-${visitNumber}`, `patient-${patientId}-outcome-${id}`).
+  - Prevents record duplication on re-seeding or re-assessment; repeated runs update existing memories in place.
+
+- **Chronological Anchoring**:
+  - Each encounter is anchored to a distinct ISO timestamp (`occurred_start`), reflecting the patient's multi-visit timeline (e.g., Visit 1 at Month -12 through Visit 4 at Month 0).
+  - Memory citations preserve the actual visit dates so clinicians see accurate temporal sequencing.
+
+- **Smart Top-12 Memory Selection**:
+  - To prevent recent encounters from crowding out longitudinal history, the recall pipeline implements visit-bucketed deduplication:
+    1. **Priority 1**: Prior clinician feedback and outcomes (up to 3 units).
+    2. **Priority 2**: Longitudinal visit coverage ensuring every distinct encounter period is represented.
+    3. **Priority 3**: Highest semantic salience units filling the remaining slots up to a hard cap of 12.
+
+- **Full Design Specification**:
+  - For comprehensive documentation on schemas, API contracts, failure modes, and verification tests, see [docs/MEMORY_DESIGN.md](docs/MEMORY_DESIGN.md).
 
 ---
 
@@ -305,8 +359,8 @@ docker compose up --build
 ### 1. 📥 Clone & Install
 
 ```bash
-git clone https://github.com/gopaljilab/Clinical-Insight-Engine.git
-cd Clinical-Insight-Engine
+git clone https://github.com/gopaljilab/RecallCare.git
+cd recallcare
 npm install
 ```
 
@@ -518,7 +572,7 @@ deactivate
 ## 📁 Project Structure
 
 ```
-Clinical-Insight-Engine/
+RecallCare/
 │
 ├── client/                        # React frontend
 │   └── src/
@@ -874,29 +928,6 @@ We love contributions! Whether it's a bug fix, a new feature, or improved docs �
 Please read our [**Contributing Guide**](CONTRIBUTING.md) and [**Code of Conduct**](CODE_OF_CONDUCT.md) before submitting.
 
 ---
-
-## 👥 Contributors
-
-<a href="https://github.com/gopaljilab/Clinical-Insight-Engine/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=gopaljilab/Clinical-Insight-Engine" alt="Contributors" />
-</a>
-
----
-
-## 👤 Author - [![GitHub](https://img.shields.io/badge/GitHub-gopaljilab-181717?style=flat-square&logo=github)](https://github.com/gopaljilab)
-
-
-**Gopal Gupta**
-*Computer Science Engineer · Full-Stack Developer · Data Science & ML Enthusiast*
-
-<div align="center">
-
-*Built with ❤️ for better preventive healthcare*
-
-⭐ **Star this repo** if you find it useful — it helps others discover the project!
-
-</div>
-
 
 ### GSSoC Drizzle Migrations Policy
 - All schema changes must go through drizzle-kit generate.
