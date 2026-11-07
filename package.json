@@ -158,7 +158,7 @@
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.7.0",
-    "@vitest/coverage-v8": "4.1.12",
+    "@vitest/coverage-v8": "5.1.0",
     "autoprefixer": "^10.5.0",
     "bufferutil": "^4.1.0",
     "drizzle-kit": "^0.31.8",
