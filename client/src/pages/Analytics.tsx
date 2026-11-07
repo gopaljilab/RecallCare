@@ -50,7 +50,7 @@ export default function Analytics() {
 
   const distData = useMemo(
     () =>
-      stats?.distribution.map((d) => ({
+      stats?.distribution?.map((d) => ({
         name: d.category,
         value: d.count,
         color: COLORS[d.category as keyof typeof COLORS] ?? "#94a3b8",
@@ -60,17 +60,17 @@ export default function Analytics() {
 
   const avgData = useMemo(
     () =>
-      stats
+      stats?.averages
         ? [
-            { name: "Average BMI", value: stats.averages.bmi.toFixed(1) },
-            { name: "Average HbA1c", value: stats.averages.hba1c.toFixed(1) },
+            { name: "Average BMI", value: (stats.averages.bmi ?? 0).toFixed(1) },
+            { name: "Average HbA1c", value: (stats.averages.hba1c ?? 0).toFixed(1) },
           ]
         : [],
-    [stats]
+    [stats?.averages]
   );
 
   const factorsData = useMemo(() => {
-    return stats?.commonFactors.map(f => ({
+    return stats?.commonFactors?.map(f => ({
       name: f.factor,
       count: f.count
     })) ?? [];
@@ -169,7 +169,7 @@ export default function Analytics() {
               <CardContent>
                 <div className="flex items-center gap-2">
                   <Activity className="h-5 w-5 text-emerald-500" />
-                  <div className="text-3xl font-black text-foreground">{stats.averages.bmi.toFixed(1)}</div>
+                  <div className="text-3xl font-black text-foreground">{stats.averages?.bmi ? stats.averages.bmi.toFixed(1) : "0.0"}</div>
                 </div>
               </CardContent>
             </Card>
@@ -181,7 +181,7 @@ export default function Analytics() {
               <CardContent>
                 <div className="flex items-center gap-2">
                   <Activity className="h-5 w-5 text-amber-500" />
-                  <div className="text-3xl font-black text-foreground">{stats.averages.hba1c.toFixed(1)}%</div>
+                  <div className="text-3xl font-black text-foreground">{stats.averages?.hba1c ? stats.averages.hba1c.toFixed(1) : "0.0"}%</div>
                 </div>
               </CardContent>
             </Card>

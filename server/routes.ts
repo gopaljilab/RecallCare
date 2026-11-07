@@ -473,6 +473,7 @@ export async function registerRoutes(
   app.use("/api/assessments", mlRouter);
   app.use("/api/assessments", exportsRouter);
   app.use("/api/assessments", analyticsRouter);
+  app.use("/api", analyticsRouter);
   app.use("/api/assessments", agentRouter);
   app.use("/api/assessments", generalLimiter, assessmentsRouter);
 
