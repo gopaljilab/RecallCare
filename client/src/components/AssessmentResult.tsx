@@ -19,6 +19,7 @@ import { ClinicalNoteViewer } from "./ClinicalNoteViewer";
 import { ExplainabilityPanel } from "./assessment/ExplainabilityPanel";
 import { CollaborativeNotes } from "./CollaborativeNotes";
 import { PathToImprovement } from "./assessment/PathToImprovement";
+import { MemoryInsightPanel } from "./memory/MemoryInsightPanel";
 import { Textarea } from "@/components/ui/textarea";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
@@ -435,6 +436,13 @@ export function AssessmentResult({ assessment, onClearResult }: AssessmentResult
                   </div>
                 </div>
               </div>
+
+              {/* Persistent-Memory AI Agent Insight Panel */}
+              <MemoryInsightPanel
+                assessmentId={assessment.id}
+                patientName={assessment.patientName}
+                patientId={(assessment as any).patientId}
+              />
 
               {/* Clinician Top Metrics */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

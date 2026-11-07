@@ -30,12 +30,20 @@ import { ThemeProvider } from "./components/ThemeProvider";
 import { fetchCsrfToken } from "./lib/apiClient";
 import RoleRouter from "./pages/RoleRouter";
 import Settings from "./pages/Settings";
+import DemoEncounter from "./pages/DemoEncounter";
 import "./i18n";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Landing} />
+      {import.meta.env.DEV && (
+        <Route path="/demo-encounter">
+          <ProtectedRoute>
+            <DemoEncounter />
+          </ProtectedRoute>
+        </Route>
+      )}
       <Route path="/dashboard">
         <ProtectedRoute>
           <RoleRouter />
