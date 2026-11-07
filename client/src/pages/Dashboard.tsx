@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "react-i18next";
 import { ApiClient } from "@/lib/apiClient";
 const formSchema = insertAssessmentSchema.pick({
+  patientId: true,
   patientName: true,
   gender: true,
   hypertension: true,
@@ -28,6 +29,7 @@ const formSchema = insertAssessmentSchema.pick({
   insulin: true,
   skinThickness: true,
 }).extend({
+  patientId: z.string().trim().max(100).optional().or(z.literal("")),
   // Transform empty inputs to undefined and validate range parameters
   age: z.preprocess((val) => (val === "" || val === undefined ? undefined : Number(val)), 
     z.number({ error: "Age must be a number" })
@@ -75,7 +77,7 @@ function getRiskBadgeClass(category?: string) {
 
 export default function Dashboard() {
   useEffect(() => {
-    document.title = "Clinical Insight Engine - Dashboard";
+    document.title = "RecallCare - Dashboard";
   }, []);
 
   const [result, setResult] = useState<AssessmentResponse | null>(null);
@@ -113,6 +115,7 @@ export default function Dashboard() {
   } = useForm<AssessmentFormData>({
     resolver: zodResolver(formSchema) as any,
     defaultValues: {
+      patientId: "",
       patientName: "",
       hypertension: false,
       heartDisease: false,
@@ -341,19 +344,46 @@ export default function Dashboard() {
                       <UserCircle className="w-5 h-5 text-blue-600" /> Demographics
                     </h3>
                     <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                      <div className="space-y-2 md:col-span-2">
+                      <div className="space-y-2">
                         <label htmlFor="patientName" className={labelClass}>Patient Name</label>
                         <input
                           id="patientName"
                           type="text"
                           {...register("patientName")}
                           className={getInputClass(!!errors.patientName)}
-                          placeholder="e.g., John Doe"
+                          placeholder="e.g., Marcus Vance"
                           aria-label="Patient full name"
                           aria-describedby="patientName-guidance"
                         />
-                        <p id="patientName-guidance" className="text-xs text-slate-500 dark:text-slate-400">Enter the full name used in the clinical record.</p>
+                        <p id="patientName-guidance" className="text-xs text-slate-500 dark:text-slate-400">Full clinical record name.</p>
                         {errors.patientName && <p className="text-sm text-red-600 mt-1">{errors.patientName.message}</p>}
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-1.5">
+                          <label htmlFor="patientId" className={labelClass}>Patient ID / MRN</label>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="cursor-pointer text-slate-400 hover:text-slate-600 transition-colors">
+                                <Info className="w-3.5 h-3.5" />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p className="text-xs max-w-50">Optional: Enter patient ID (e.g. 101 or MRN-902) to enable Hindsight longitudinal memory & prior encounter citations.</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                        <input
+                          id="patientId"
+                          type="text"
+                          {...register("patientId")}
+                          className={getInputClass(!!errors.patientId)}
+                          placeholder="e.g., 101"
+                          aria-label="Patient Identifier or Medical Record Number"
+                          aria-describedby="patientId-guidance"
+                        />
+                        <p id="patientId-guidance" className="text-xs text-slate-500 dark:text-slate-400">Links longitudinal memory.</p>
+                        {errors.patientId && <p className="text-sm text-red-600 mt-1">{errors.patientId.message}</p>}
                       </div>
 
                       <div className="space-y-2">
