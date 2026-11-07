@@ -8,7 +8,7 @@ describe("client/index.html", () => {
     const html = readFileSync(htmlPath, "utf-8");
 
     expect(html).toMatch(
-      /<title>\s*Clinical Insight Engine\s*<\/title>/i,
+      /<title>\s*RecallCare/i,
     );
   });
 });
