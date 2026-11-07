@@ -50,6 +50,20 @@
       "when": 1792792035284,
       "tag": "0006_prediction_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793993909012,
+      "tag": "0007_clean_masque",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794047234608,
+      "tag": "0008_powerful_rattler",
+      "breakpoints": true
     }
   ]
 }

@@ -40,6 +40,7 @@ export const assessments = pgTable(
     createdBy: text("created_by"),
     createdAt: timestamp("created_at").defaultNow(),
     userId: text("user_id"),
+    patientId: text("patient_id"),
     clinicalNote: text("clinical_note"),
     explainableInsights: jsonb("explainable_insights").$type<
       Array<{
@@ -71,6 +72,7 @@ const optionalFiniteNumber = z.preprocess(
 );
 
 export const insertAssessmentSchema = z.object({
+  patientId: z.string().trim().min(1).optional().nullable(),
   patientName: z.string().trim().min(1).optional(),
   gender: z.enum(["Male", "Female"]),
   age: z.preprocess(
@@ -311,3 +313,38 @@ export const deadLetterJobs = pgTable("dead_letter_jobs", {
 
 export type DeadLetterJob = typeof deadLetterJobs.$inferSelect;
 export type InsertDeadLetterJob = typeof deadLetterJobs.$inferInsert;
+
+export const agentOutcomes = pgTable(
+  "agent_outcomes",
+  {
+    id: serial("id").primaryKey(),
+    assessmentId: integer("assessment_id")
+      .notNull()
+      .references(() => assessments.id, { onDelete: "cascade" }),
+    clinicianId: uuid("clinician_id").references(() => users.id),
+    patientId: text("patient_id"),
+    helpful: boolean("helpful").notNull(),
+    intervention: text("intervention"),
+    outcomeText: text("outcome_text").notNull(),
+    hindsightMemoryId: text("hindsight_memory_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("agent_outcomes_assessment_id_idx").on(table.assessmentId),
+    index("agent_outcomes_patient_id_idx").on(table.patientId),
+  ]
+);
+
+export const insertAgentOutcomeSchema = z.object({
+  assessmentId: z.number().int(),
+  clinicianId: z.string().uuid().optional().nullable(),
+  patientId: z.string().optional().nullable(),
+  helpful: z.boolean(),
+  intervention: z.string().optional().nullable(),
+  outcomeText: z.string().min(1, "Outcome feedback is required"),
+  hindsightMemoryId: z.string().optional().nullable(),
+});
+
+export type AgentOutcome = typeof agentOutcomes.$inferSelect;
+export type InsertAgentOutcome = z.infer<typeof insertAgentOutcomeSchema>;
+
