@@ -28,6 +28,7 @@ export default defineConfig({
     "model_versions",
     "patient_users",
     "patient_access_audit_logs",
-    "dead_letter_jobs"
+    "dead_letter_jobs",
+    "agent_outcomes"
   ],
 });

@@ -283,20 +283,22 @@ export function startAssessmentWorker(): void {
             const client = await pool.connect();
             try {
               await client.query("BEGIN");
+              const patientId = input.patientId ? String(input.patientId).trim() : null;
               const result = await client.query(
                 `INSERT INTO assessments (
                   patient_name, age, gender, hypertension, heart_disease,
                   smoking_history, bmi, hba1c_level, blood_glucose_level,
                   risk_score, risk_category, factors, confidence_interval,
-                  model_confidence, prediction_method, model_version, fallback_used, created_by, user_id
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                  model_confidence, prediction_method, model_version, fallback_used, created_by, user_id, patient_id
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
                 RETURNING *, patient_name AS "patientName", heart_disease AS "heartDisease",
                   smoking_history AS "smokingHistory", hba1c_level AS "hba1cLevel",
                   blood_glucose_level AS "bloodGlucoseLevel", risk_score AS "riskScore",
                   risk_category AS "riskCategory", confidence_interval AS "confidenceInterval",
                   model_confidence AS "modelConfidence", prediction_method AS "predictionMethod",
                   model_version AS "modelVersion", fallback_used AS "fallbackUsed",
-                  created_by AS "createdBy", created_at AS "createdAt", user_id AS "userId"`,
+                  created_by AS "createdBy", created_at AS "createdAt", user_id AS "userId",
+                  patient_id AS "patientId"`,
                 [
                   input.patientName, input.age, input.gender, input.hypertension,
                   input.heartDisease, input.smokingHistory, input.bmi,
@@ -313,6 +315,7 @@ export function startAssessmentWorker(): void {
                   resolvedPrediction.fallback_used ?? false,
                   userEmail || userId,
                   userId,
+                  patientId,
                 ]
               );
               await client.query("COMMIT");
