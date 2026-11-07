@@ -11,6 +11,7 @@ import type { Express } from "express";
 import type { Server } from "http";
 
 import assessmentsRouter from "./routes/assessments.routes";
+import { agentRouter } from "./agent/agent.routes";
 import fhirRouter from "./routes/fhir.routes";
 import clinicalRouter from "./routes/clinical.routes";
 import { storage, type AssessmentCreateInput } from "./storage";
@@ -472,6 +473,7 @@ export async function registerRoutes(
   app.use("/api/assessments", mlRouter);
   app.use("/api/assessments", exportsRouter);
   app.use("/api/assessments", analyticsRouter);
+  app.use("/api/assessments", agentRouter);
   app.use("/api/assessments", generalLimiter, assessmentsRouter);
 
   /**

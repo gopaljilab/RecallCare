@@ -24,7 +24,7 @@ if (extendZodWithOpenApi) {
 
 const swaggerUiOptions = {
 
-  customSiteTitle: "Clinical Insight Engine API Docs",
+  customSiteTitle: "RecallCare API Docs",
   swaggerOptions: {
     persistAuthorization: true,
   },
@@ -250,10 +250,10 @@ const generator = OpenApiGeneratorV3 ? new OpenApiGeneratorV3(registry?.definiti
 export const openApiDocument = generator ? generator.generateDocument({
   openapi: "3.0.0",
   info: {
-    title: "Clinical Insight Engine API",
+    title: "RecallCare API",
     version: "1.0.0",
     description:
-      "Foundational OpenAPI documentation for the Clinical Insight Engine API.",
+      "OpenAPI documentation for RecallCare — The clinical assistant that remembers every patient visit.",
   },
   servers: [
     {
